@@ -20,6 +20,7 @@ def get_args():
     parser.add_argument('--dataset_name', type=str, default = 'openlanguagedata/flores_plus')
     parser.add_argument('--language', type=str, default='eng_Latn')
     parser.add_argument('--split', type=str, default='devtest')
+    parser.add_argument('--subset', type=str, default='')
     parser.add_argument('--text_field', type=str, default='text')
     parser.add_argument('--max_length', type=int, default=512)
     parser.add_argument('--batch_size', type=int, default=1024)
@@ -76,7 +77,7 @@ class Config:
         self.batch_size = args.batch_size
         self.text_field = args.text_field
         self.max_length = args.max_length
-
+        self.subset = args.subset
         # Interpretability
         self.method = args.method
         self.sae_model = args.sae_model

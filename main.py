@@ -10,13 +10,14 @@ import time
 import torch
 import gc
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 sys.path.append(os.path.abspath('.'))
 logger = config.get_logger()
 args = config.Config()
 
 def save_results(results, layer_name, output_type: str = ""):
     try:
-        path = os.path.join(args.save_dir,os.path.join(f"sae_features_{output_type}_{args.dataset_name}_{args.split}_{args.language}"))
+        path = os.path.join(args.save_dir,os.path.join(f"sae_features_{output_type}_{args.dataset_name}_{args.split}_{args.language}_{args.subset}"))
         #path = os.path.join(args.save_dir,os.path.join(f"sae_features_{output_type}_{args.language}"))
         os.makedirs(path, exist_ok=True)
         layer_tensor = torch.cat(results, dim=0)
@@ -31,7 +32,7 @@ def save_results(results, layer_name, output_type: str = ""):
 def main():
     dataset_loader = d_loader.HFDatasetLoader(args.model_name,
                     args.dataset_name, args.text_field, 
-                    args.split, args.language, args.batch_size, 
+                    args.split, args.language, args.subset, args.batch_size, 
                     args.max_length, args.num_workers, logger)
     data_loader = dataset_loader.dataloader
     model_loader = m_loader.HFModelLoader(args.model_name,args.model_type,args.device,logger)
@@ -60,9 +61,9 @@ def main():
                 sae_latents = sae_model.encode(hidden)  # (B*T, latent)
                 sae_latents_activations, sae_latents_indices, sae_latents_preacts = sae_latents.top_acts.cpu(), sae_latents.top_indices.cpu(), sae_latents.pre_acts.cpu()
                 logger.info(f"Sae Latents size {sae_latents_activations.shape} and {sae_latents_indices.shape} and {sae_latents_preacts.shape}")
-                layer_outputs.append(sae_latents_activations)
-                layer_indices.append(sae_latents_indices)
-                layer_preacts.append(sae_latents_preacts)
+                layer_outputs.append(sae_latents_activations.cpu().detach())
+                layer_indices.append(sae_latents_indices.cpu().detach())
+                layer_preacts.append(sae_latents_preacts.cpu().detach())
             # After all batches for this layer are done → save to disk
             save_results(layer_outputs, layer_name, "activations")
             save_results(layer_indices, layer_name, "indices")
@@ -73,6 +74,7 @@ def main():
             del sae_latents_activations, sae_latents_indices, sae_latents_preacts
             del layer_outputs, layer_indices, layer_preacts
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
             gc.collect()
             print(f"After free, Allocated memory: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB")
             print(f"After free, Reserved memory: {torch.cuda.memory_reserved() / 1024 ** 2:.2f} MB")
