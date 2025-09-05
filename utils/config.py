@@ -3,6 +3,7 @@ import argparse
 import logging
 import os
 import json
+from typing import List
 
 def get_args():
     parser = argparse.ArgumentParser(description="Mechanistic Interpretability on Multilingual LLMs")
@@ -19,7 +20,7 @@ def get_args():
     
     # Data
     parser.add_argument('--dataset_name', type=str, default = 'openlanguagedata/flores_plus')
-    parser.add_argument('--language', type=str, default='eng_Latn')
+    parser.add_argument('--languages', nargs='+', type=str, default=['en', 'es'])
     parser.add_argument('--split', type=str, default='devtest')
     parser.add_argument('--text_field', type=str, default='text')
     parser.add_argument('--max_length', type=int, default=512)
@@ -75,7 +76,7 @@ class Config:
         # Data
         self.dataset_name = args.dataset_name
         self.split = args.split
-        self.language = args.language
+        self.languages = args.languages
         self.batch_size = args.batch_size
         self.text_field = args.text_field
         self.max_length = args.max_length
