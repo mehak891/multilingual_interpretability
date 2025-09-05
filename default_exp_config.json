@@ -6,14 +6,26 @@
     "model_name": "Llama-3.2-1B",
     "model_type": "llm",
     "layers": [
-        "layers.2.mlp"
+        "layers.0.mlp"
     ],
     "dataset_name": "flores_plus",
     "split": "devtest",
     "languages": [
         "en",
+        "de",
+        "fr",
+        "it",
+        "pt",
+        "hi",
         "es",
-        "fr"
+        "th",
+        "bg",
+        "ru",
+        "tr",
+        "vi",
+        "ja",
+        "ko",
+        "zh"
     ],
     "batch_size": 16,
     "text_field": "text",
