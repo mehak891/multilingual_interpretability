@@ -6,6 +6,8 @@ import utils.config as config
 from data.multiloader import MultilingualDatasetManager
 from models import loader as m_loader
 from utils.streaming_activation_extractor import StreamingExtractor
+from utils.feature_storage_utils import save_detailed_features_from_extractor
+
 
 sys.path.append(os.path.abspath('.'))
 logger = config.get_logger()
@@ -16,12 +18,12 @@ def main():
     
     # Initialize components
     dataset_manager = MultilingualDatasetManager(
-        model_name=args.model_name,
+        model_name=args.model_path,
         max_length=args.max_length,
         verbose=True
     )
     
-    model_loader = m_loader.HFModelLoader(args.model_name, args.model_type, args.device, logger)
+    model_loader = m_loader.HFModelLoader(args.model_path, args.model_type, args.device, logger)
     model = model_loader.model
     sae_loader = m_loader.SAELoader(args.sae_model, args.layers, args.device, logger)
     saes = sae_loader.sae_model
@@ -54,6 +56,7 @@ def main():
             continue
     
     # Run SAE-LAPE analysis
+    # if args.method.lower()=="sae_lape":
     try:
         final_indices, features_info = extractor.compute_sae_lape(
             topk_threshold_ratio=0.8,
@@ -70,10 +73,18 @@ def main():
             logger.warning("  - Filtering criteria are too strict")
             return
         
+        # Save detailed features by layer and language
+        save_detailed_features_from_extractor(
+            extractor=extractor,
+            model_name=args.model_name,
+            method="sae_lape_streaming",
+            top_k=100
+        )
+
     except Exception as e:
         logger.error(f"SAE-LAPE computation failed: {e}")
         return
-    
+
     # Save results  
     results = {
         "final_indices": final_indices,
@@ -81,10 +92,10 @@ def main():
         "sorted_lang": sorted(extractor.lang_to_stats.keys())
     }
     
-    output_path = os.path.join(args.save_dir, f"sae_lape_{args.dataset_name}_{args.split}.pt")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    torch.save(results, output_path)
-    logger.info(f"Saved results: {output_path}")
+    # output_path = os.path.join(args.save_dir, f"sae_lape_{args.dataset_name}_{args.split}.pt")
+    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    # torch.save(results, output_path)
+    # logger.info(f"Saved results: {output_path}")
     
     # Print summary - with bounds checking
     sorted_langs = results["sorted_lang"]

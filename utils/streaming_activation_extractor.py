@@ -2,6 +2,7 @@ import torch
 import math
 from tqdm import tqdm
 from collections import defaultdict
+from itertools import islice
 
 class StreamingExtractor:
     def __init__(self, model, saes, device):
@@ -75,7 +76,7 @@ class StreamingExtractor:
         for layer_index, (layer_name, sae_model) in enumerate(self.saes.items()):
             sae_model.to(self.device)
             
-            for batch in tqdm(data_loader, desc=f"{lang} | Layer {layer_name}"):
+            for batch in tqdm(islice(data_loader, 3), desc=f"{lang} | Layer {layer_name}"):
                 input_ids = batch["input_ids"].to(self.device)
                 attention_mask = batch["attention_mask"].to(self.device)
 

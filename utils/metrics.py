@@ -12,6 +12,7 @@ def stack_activations_count(lang_to_stats, sorted_lang):
     global_max_active_over_zero = None
     global_min_active_over_zero = None
     global_over_zero_total = 0
+    global_over_zero_token = 0
 
     # Get feature dimension from first available tensor
     H = None
@@ -43,7 +44,10 @@ def stack_activations_count(lang_to_stats, sorted_lang):
         for layer in lang_to_stats[lang]:
             # Handle potential None values
             if layer["over_zero_token"] is not None:
-                lang_over_zero_token.append(layer["over_zero_token"].cpu())
+                layer_token_count = layer["over_zero_token"].cpu()
+                lang_over_zero_token.append(layer_token_count)
+                # FIXED: Add to global_over_zero_token (matching Implementation 2)
+                global_over_zero_token += layer_token_count
             else:
                 lang_over_zero_token.append(torch.zeros(H, dtype=torch.long))
                 
@@ -92,9 +96,7 @@ def stack_activations_count(lang_to_stats, sorted_lang):
     over_zero_token = torch.stack(over_zero_token, dim=-1)  # (layers, hidden_dim, langs)
     over_zero_example = torch.stack(over_zero_example, dim=-1)
 
-    # Calculate global average
-    total_activations = over_zero_token.sum()
-    global_avg_active_over_zero = global_over_zero_total / (total_activations + 1e-10)
+    global_avg_active_over_zero = global_over_zero_total / (global_over_zero_token + 1e-10)
 
     return (
         num_examples,

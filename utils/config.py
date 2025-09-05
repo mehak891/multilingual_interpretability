@@ -13,7 +13,8 @@ def get_args():
     parser.add_argument('--device', type=str, default='cuda:0')
 
     # Model
-    parser.add_argument('--model_name', type=str, default='meta-llama/Llama-3.2-1B')
+    parser.add_argument('--model_path', type=str, default='/home/models/meta-llama_Llama-3.2-1B')
+    parser.add_argument('--model_name', type=str, default='Llama-3.2-1B')
     parser.add_argument('--model_type', type=str, default='llm')
     
     # Data
@@ -66,6 +67,7 @@ class Config:
         self.device = args.device
 
         # Model
+        self.model_path = args.model_path
         self.model_name = args.model_name
         self.model_type = args.model_type
         self.layers = args.layers
