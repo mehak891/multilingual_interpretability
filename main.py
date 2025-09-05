@@ -1,87 +1,106 @@
 import os
 import sys
-from tqdm import tqdm
-from torch.profiler import profile, record_function, ProfilerActivity
-#sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import utils.config as config
-from data import loader as d_loader
-from models import loader as m_loader
-import time
 import torch
 import gc
+import utils.config as config
+from data.multiloader import MultilingualDatasetManager
+from models import loader as m_loader
+from utils.streaming_activation_extractor import StreamingExtractor
 
 sys.path.append(os.path.abspath('.'))
 logger = config.get_logger()
 args = config.Config()
 
-def save_results(results, layer_name, output_type: str = ""):
-    try:
-        path = os.path.join(args.save_dir,os.path.join(f"sae_features_{output_type}_{args.dataset_name}_{args.split}_{args.language}"))
-        #path = os.path.join(args.save_dir,os.path.join(f"sae_features_{output_type}_{args.language}"))
-        os.makedirs(path, exist_ok=True)
-        layer_tensor = torch.cat(results, dim=0)
-        save_path = os.path.join(path, f"{layer_name.replace('.', '_')}.pt")
-        torch.save(layer_tensor, save_path)
-        logger.info(f" Saved: {save_path} | shape = {layer_tensor.shape}")
-    except Exception as e:
-        logger.error(f"Error in saving {layer_name} at {output_type}: {e}")
-        
-
-
 def main():
-    dataset_loader = d_loader.HFDatasetLoader(args.model_name,
-                    args.dataset_name, args.text_field, 
-                    args.split, args.language, args.batch_size, 
-                    args.max_length, args.num_workers, logger)
-    data_loader = dataset_loader.dataloader
-    model_loader = m_loader.HFModelLoader(args.model_name,args.model_type,args.device,logger)
+    languages = ["en", "es"]
+    
+    # Initialize components
+    dataset_manager = MultilingualDatasetManager(
+        model_name=args.model_name,
+        max_length=args.max_length,
+        verbose=True
+    )
+    
+    model_loader = m_loader.HFModelLoader(args.model_name, args.model_type, args.device, logger)
     model = model_loader.model
-    sae_loader = m_loader.SAELoader(args.sae_model,args.layers,args.device,logger)
+    sae_loader = m_loader.SAELoader(args.sae_model, args.layers, args.device, logger)
     saes = sae_loader.sae_model
-    device = args.device
-    for layer_index, (layer_name, sae_model) in enumerate(saes.items()):
-        with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], profile_memory=True) as prof:
-            start = time.time()
-            logger.info(f"\n[Layer {layer_index}] Processing {layer_name}...")
-            sae_model.to(args.device)
-            layer_outputs, layer_indices, layer_preacts = [], [], []
-            for batch in tqdm(data_loader, desc=f"Layer {layer_name}"):
-                input_ids, attention_mask = batch["input_ids"].to(device), batch["attention_mask"].to(device)
-                with torch.no_grad():
-                    outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-                    hidden_states = outputs.hidden_states  # list of hidden states
-
-                # SAE expects input from a specific layer (e.g., hidden_states[1] for block.0)
-                # Layer index +1 because hidden_states[0] is input embedding
-                hidden = hidden_states[layer_index + 1]
-                logger.info(f"Hidden state size {hidden.shape}")
-                #flat_hidden = hidden.view(-1, hidden.shape[-1])  # (B*T, dim)
-                logger.info(f"Flattened hidden state size {hidden.shape}")
-                sae_latents = sae_model.encode(hidden)  # (B*T, latent)
-                sae_latents_activations, sae_latents_indices, sae_latents_preacts = sae_latents.top_acts.cpu(), sae_latents.top_indices.cpu(), sae_latents.pre_acts.cpu()
-                logger.info(f"Sae Latents size {sae_latents_activations.shape} and {sae_latents_indices.shape} and {sae_latents_preacts.shape}")
-                layer_outputs.append(sae_latents_activations)
-                layer_indices.append(sae_latents_indices)
-                layer_preacts.append(sae_latents_preacts)
-            # After all batches for this layer are done → save to disk
-            save_results(layer_outputs, layer_name, "activations")
-            save_results(layer_indices, layer_name, "indices")
-            #save_results(layer_preacts, layer_name, "preacts")
-            print(f"Allocated memory: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB")
-            print(f"Reserved memory: {torch.cuda.memory_reserved() / 1024 ** 2:.2f} MB")
-            del sae_latents, sae_model, hidden, hidden_states, outputs, input_ids, attention_mask
-            del sae_latents_activations, sae_latents_indices, sae_latents_preacts
-            del layer_outputs, layer_indices, layer_preacts
-            torch.cuda.empty_cache()
+    
+    # Initialize streaming extractor
+    extractor = StreamingExtractor(model=model, saes=saes, device=args.device)
+    
+    # Process each language
+    for lang in languages:
+        logger.info(f"Processing language: {lang}")
+        
+        try:
+            dataset_manager.download_and_cache_dataset(
+                args.dataset_name, languages=[lang], splits=[args.split]
+            )
+            
+            data_loader = dataset_manager.create_dataloader(
+                args.dataset_name, lang, args.split,
+                batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+            )
+            
+            extractor.run(data_loader, lang)
+            
+            del data_loader
             gc.collect()
-            print(f"After free, Allocated memory: {torch.cuda.memory_allocated() / 1024 ** 2:.2f} MB")
-            print(f"After free, Reserved memory: {torch.cuda.memory_reserved() / 1024 ** 2:.2f} MB")
-            end = time.time()
-            logger.info(f" Time taken to run: {end-start}")
-        print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
+            torch.cuda.empty_cache()
+            
+        except Exception as e:
+            logger.error(f"Error processing language {lang}: {e}")
+            continue
+    
+    # Run SAE-LAPE analysis
+    try:
+        final_indices, features_info = extractor.compute_sae_lape(
+            topk_threshold_ratio=0.8,
+            example_rate=0.98,
+            top=100,
+            lang_specific=True
+        )
+        
+        # Check if results are empty
+        if not final_indices or len(final_indices) == 0:
+            logger.warning("No language-specific features found. This may indicate:")
+            logger.warning("  - Insufficient data collected")
+            logger.warning("  - Features are too shared across languages")
+            logger.warning("  - Filtering criteria are too strict")
+            return
+        
+    except Exception as e:
+        logger.error(f"SAE-LAPE computation failed: {e}")
+        return
+    
+    # Save results  
+    results = {
+        "final_indices": final_indices,
+        "features_info": features_info,
+        "sorted_lang": sorted(extractor.lang_to_stats.keys())
+    }
+    
+    output_path = os.path.join(args.save_dir, f"sae_lape_{args.dataset_name}_{args.split}.pt")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    torch.save(results, output_path)
+    logger.info(f"Saved results: {output_path}")
+    
+    # Print summary - with bounds checking
+    sorted_langs = results["sorted_lang"]
+    for i, lang in enumerate(sorted_langs):
+        if i < len(final_indices):
+            num_features = sum(len(layer_features) for layer_features in final_indices[i])
+            logger.info(f"{lang}: {num_features} language-specific features")
+        else:
+            logger.info(f"{lang}: 0 language-specific features (no data collected)")
+            
+    # Additional debugging info
+    logger.info("Data collection summary:")
+    for lang, layers in extractor.lang_to_stats.items():
+        total_examples = sum(layer.get("num_examples", 0) for layer in layers)
+        total_tokens = sum(layer.get("num_tokens", 0) for layer in layers)
+        logger.info(f"  {lang}: {total_examples} examples, {total_tokens} tokens")
 
 if __name__ == "__main__":
     main()
-
-
-

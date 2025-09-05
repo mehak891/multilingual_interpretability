@@ -37,6 +37,7 @@ def get_args():
 
     # Output
     parser.add_argument('--save_dir', type=str, default='./outputs')
+    parser.add_argument('--skip_existing_acts', type=bool, default=True)
     return parser.parse_args()
 
 
@@ -83,6 +84,7 @@ class Config:
 
         # Output
         self.save_dir = args.save_dir
+        self.skip_existing_acts = args.skip_existing_acts
         self.num_workers = args.num_workers
 
         # Optionally, save config

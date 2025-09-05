@@ -43,7 +43,7 @@ class HFDataset(Dataset):
             max_length=128
         )
 
-    def __get_item__(self,idx):
+    def __getitem__(self,idx):
         text = self.dataset[idx][self.text_field]
         encoded = self.tokenizer(text=text,truncation=True,padding='max_length',
                     max_length=self.max_length,return_tensors='pt')
