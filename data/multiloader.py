@@ -60,9 +60,12 @@ class MultilingualDatasetManager:
         dataset_lang_code = self._get_dataset_language_code(dataset_name, common_lang)
         
         try:
-            if config['language_param_type'] == 'subset':
-                # Language as subset parameter (like flores)
-                dataset = load_dataset(config['name'], dataset_lang_code, split=split)
+            if config['language_param_type'] == 'flores_subset':
+                dataset = load_dataset(config['name'], "all", split=split)
+                # Extract the language column and convert to dataset
+                import pandas as pd
+                df = pd.DataFrame({"sentence": list(dataset[f"sentence_{dataset_lang_code}"])})
+                dataset = HFDatasetType.from_pandas(df)
 
             elif config['language_param_type'] == 'flores_plus_subset':
                 dataset = load_dataset(config['name'], dataset_lang_code, split=split)
@@ -266,6 +269,7 @@ class TokenizedDataset(Dataset):
         return len(self.hf_dataset)
     
     def __getitem__(self, idx):
+        # print(self.hf_dataset[0])
         text = self.hf_dataset[idx][self.text_field]
         encoded = self.tokenizer(
             text,

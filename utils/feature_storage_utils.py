@@ -9,6 +9,8 @@ def save_sae_lape_features(
     sorted_langs,
     model_name,
     layer_names,
+    dataset,
+    split,
     method="sae_lape",
     base_dir="identification",
     top_k=100
@@ -59,7 +61,7 @@ def save_sae_lape_features(
             
             if data:
                 # Create directory and save using actual layer number
-                dir_path = Path(base_dir) / model_name / method / f"layer_{layer_num}"
+                dir_path = Path(base_dir) / model_name / method / f"layer_{layer_num}" / f"{dataset}-en-de" / split
                 dir_path.mkdir(parents=True, exist_ok=True)
                 
                 df = pd.DataFrame(data[:top_k])

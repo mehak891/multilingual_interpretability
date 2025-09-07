@@ -7,7 +7,7 @@
     "it": {"flores": "ita_Latn", "flores_plus": "ita_Latn", "wmt": "it", "opus100": "it"},
     "pt": {"flores": "por_Latn", "flores_plus": "por_Latn", "wmt": "pt", "opus100": "pt"},
     "ru": {"flores": "rus_Cyrl", "flores_plus": "rus_Cyrl", "wmt": "ru", "opus100": "ru"},
-    "zh": {"flores": "cmn_Hans", "flores_plus": "cmn_Hans", "wmt": "zh", "opus100": "zh"},
+    "zh": {"flores": "zho_Hans", "flores_plus": "cmn_Hans", "wmt": "zh", "opus100": "zh"},
     "ja": {"flores": "jpn_Jpan", "flores_plus": "jpn_Jpan", "wmt": "ja", "opus100": "ja"},
     "ko": {"flores": "kor_Hang", "flores_plus": "kor_Hang", "wmt": "ko", "opus100": "ko"},
     "ar": {"flores": "arb_Arab", "flores_plus": "arb_Arab", "wmt": "ar", "opus100": "ar"},
@@ -19,10 +19,10 @@
   "datasets": {
     "flores": {
       "name": "facebook/flores",
-      "text_fields": ["sentence"],
+      "text_fields": ["text"],
       "split_configs": ["dev", "devtest"],
       "supported_languages": ["en", "fr", "de", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar", "hi", "bn", "ur", "tr"],
-      "language_param_type": "subset"
+      "language_param_type": "flores_subset"
     },
     "flores_plus": {
       "name": "openlanguagedata/flores_plus",

@@ -150,6 +150,8 @@ def main():
             sorted_langs=sorted(extractor.lang_to_stats.keys()),
             model_name=args.model_name,
             layer_names=args.layers,  # Pass the actual layer names
+            dataset=args.dataset_name,
+            split=args.split,
             method="sae_lape_streaming",
             top_k=100
         )

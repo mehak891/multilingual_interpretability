@@ -9,23 +9,10 @@
         "layers.0.mlp"
     ],
     "dataset_name": "flores_plus",
-    "split": "devtest",
+    "split": "dev",
     "languages": [
         "en",
-        "de",
-        "fr",
-        "it",
-        "pt",
-        "hi",
-        "es",
-        "th",
-        "bg",
-        "ru",
-        "tr",
-        "vi",
-        "ja",
-        "ko",
-        "zh"
+        "de"
     ],
     "batch_size": 16,
     "text_field": "text",

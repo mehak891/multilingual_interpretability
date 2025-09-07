@@ -121,7 +121,7 @@ class StreamingExtractor:
             sae_model.to(self.device)
             
             batch_count = 0
-            for batch in tqdm(islice(data_loader, 1), desc=f"{lang} | Layer {layer_name}"):
+            for batch in tqdm(data_loader, desc=f"{lang} | Layer {layer_name}"):
                 print(f"\n[DEBUG] Processing batch {batch_count} for {lang} layer {layer_name}")
                 
                 input_ids = batch["input_ids"].to(self.device)
