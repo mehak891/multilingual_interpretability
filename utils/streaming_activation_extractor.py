@@ -31,6 +31,9 @@ class StreamingExtractor:
                 "over_zero_total": None,
                 "max_active_over_zero": None,
                 "min_active_over_zero": None,
+                # Additional fields for magnitude ranking
+                "activation_sum": None,
+                "activation_squared_sum": None,
             })
 
         stats = self.lang_to_stats[lang][layer_idx]
@@ -45,6 +48,9 @@ class StreamingExtractor:
             stats["over_zero_total"] = torch.zeros(H, dtype=torch.long, device=self.device)
             stats["max_active_over_zero"] = torch.zeros(H, dtype=torch.float, device=self.device)
             stats["min_active_over_zero"] = torch.full((H,), float('inf'), dtype=torch.float, device=self.device)
+            # Initialize magnitude tracking
+            stats["activation_sum"] = torch.zeros(H, dtype=torch.float, device=self.device)
+            stats["activation_squared_sum"] = torch.zeros(H, dtype=torch.float, device=self.device)
 
         # Compute statistics for this batch
         over_zero_mask = sae_latents > 0
@@ -63,6 +69,12 @@ class StreamingExtractor:
         print(f"[DEBUG] example_counts shape: {example_counts.shape}")
         print(f"[DEBUG] example_counts min: {example_counts.min().item()}, max: {example_counts.max().item()}")
         print(f"[DEBUG] Features with >0 example activations: {(example_counts > 0).sum().item()}/{H}")
+        
+        # Magnitude statistics for activation averaging
+        activation_sum = sae_latents.sum(dim=(0, 1))  # Sum over batch and sequence
+        activation_squared_sum = (sae_latents ** 2).sum(dim=(0, 1))
+        print(f"[DEBUG] activation_sum range: {activation_sum.min().item():.6f} to {activation_sum.max().item():.6f}")
+        print(f"[DEBUG] activation_squared_sum range: {activation_squared_sum.min().item():.6f} to {activation_squared_sum.max().item():.6f}")
         
         # Max values
         batch_max = sae_latents.max()
@@ -103,6 +115,9 @@ class StreamingExtractor:
         stats["over_zero_total"] += token_counts  # This seems redundant with over_zero_token
         stats["max_active_over_zero"] = torch.maximum(stats["max_active_over_zero"], feature_max)
         stats["min_active_over_zero"] = torch.minimum(stats["min_active_over_zero"], feature_min)
+        # Update magnitude sums
+        stats["activation_sum"] += activation_sum
+        stats["activation_squared_sum"] += activation_squared_sum
         
         print(f"[DEBUG] Updated stats for {lang} layer {layer_idx}:")
         print(f"[DEBUG]   num_examples: {old_examples} -> {stats['num_examples']}")
@@ -110,6 +125,7 @@ class StreamingExtractor:
         print(f"[DEBUG]   over_zero_token sum: {stats['over_zero_token'].sum().item()}")
         print(f"[DEBUG]   over_zero_example sum: {stats['over_zero_example'].sum().item()}")
         print(f"[DEBUG]   max_active range: {stats['max_active_over_zero'].min().item():.6f} to {stats['max_active_over_zero'].max().item():.6f}")
+        print(f"[DEBUG]   activation_sum total: {stats['activation_sum'].sum().item():.6f}")
 
     def run(self, data_loader, lang):
         """Stream through dataset and aggregate SAE stats."""
@@ -197,6 +213,16 @@ class StreamingExtractor:
         
         return result
 
+    def get_magnitude_data(self):
+        """Convert to format for magnitude ranking."""
+        print(f"\n[DEBUG] get_magnitude_data called")
+        print(f"[DEBUG] Available languages: {list(self.lang_to_stats.keys())}")
+        
+        from utils.metrics import stack_magnitude_stats
+        result = stack_magnitude_stats(self.lang_to_stats, sorted(self.lang_to_stats.keys()))
+        
+        return result
+
     def compute_sae_lape(self, **kwargs):
         """Call original sae_lape function with stacked data."""
         print(f"\n[DEBUG] compute_sae_lape called with kwargs: {kwargs}")
@@ -227,6 +253,41 @@ class StreamingExtractor:
             global_avg_active_over_zero=global_avg_active_over_zero,
             sorted_lang=sorted_lang,
             **kwargs
+        )
+        
+        return result
+
+    def compute_magnitude_ranking(self, top=100, top_per_layer=False, apply_filtering=False):
+        """Call magnitude ranking function with collected data."""
+        print(f"\n[DEBUG] compute_magnitude_ranking called")
+        print(f"[DEBUG] Parameters: top={top}, top_per_layer={top_per_layer}, apply_filtering={apply_filtering}")
+        
+        from utils.metrics import magnitude_ranking
+        
+        magnitude_data = self.get_magnitude_data()
+        (
+            num_examples,
+            num_tokens,
+            activation_sums,
+            activation_squared_sums,
+            over_zero_token,
+            over_zero_example,
+        ) = magnitude_data
+        
+        sorted_lang = sorted(self.lang_to_stats.keys())
+        print(f"[DEBUG] Sorted languages: {sorted_lang}")
+        
+        result = magnitude_ranking(
+            num_examples=num_examples,
+            num_tokens=num_tokens,
+            activation_sums=activation_sums,
+            activation_squared_sums=activation_squared_sums,
+            over_zero_token=over_zero_token,
+            over_zero_example=over_zero_example,
+            sorted_lang=sorted_lang,
+            top=top,
+            top_per_layer=top_per_layer,
+            apply_filtering=apply_filtering
         )
         
         return result

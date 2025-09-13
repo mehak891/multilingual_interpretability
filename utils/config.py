@@ -10,6 +10,7 @@ def get_args():
 
     # General
     parser.add_argument('--experiment_name', type=str, default='default_exp')
+    parser.add_argument('--experiment_tag', type=str, default='', help='Tag to append to dataset folder names for organizing results')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', type=str, default='cuda:0')
 
@@ -32,6 +33,7 @@ def get_args():
     # Interpretability
     parser.add_argument('--method', type=str, default='SAE',
                         choices=['SAE', 'probing', 'activation patching'])
+    parser.add_argument('--ranking_method', type=str, default='magnitude')
     parser.add_argument('--sae_model', type=str, default="EleutherAI/sae-Llama-3.2-1B-131k")
     parser.add_argument('--layers', nargs="+", default=["layers.0.mlp","layers.1.mlp","layers.2.mlp","layers.3.mlp","layers.4.mlp",
                             "layers.5.mlp","layers.6.mlp","layers.7.mlp","layers.8.mlp","layers.9.mlp","layers.10.mlp","layers.11.mlp",
@@ -64,6 +66,7 @@ class Config:
         args = get_args()
         print(args)
         self.experiment_name = args.experiment_name
+        self.experiment_tag = args.experiment_tag
         self.seed = args.seed
         self.device = args.device
 
@@ -84,6 +87,7 @@ class Config:
         # Interpretability
         self.method = args.method
         self.sae_model = args.sae_model
+        self.ranking_method = args.ranking_method
 
         # Output
         self.save_dir = args.save_dir

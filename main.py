@@ -19,6 +19,7 @@ def main():
     print(f"[DEBUG] Layers: {args.layers}")
     print(f"[DEBUG] Batch size: {args.batch_size}")
     print(f"[DEBUG] Max length: {args.max_length}")
+    print(f"[DEBUG] Ranking method: {getattr(args, 'ranking_method', 'sae_lape')}")
     
     if args.languages:
         languages = args.languages
@@ -27,7 +28,7 @@ def main():
     
     # Check minimum language requirement
     if len(languages) < 2:
-        logger.error("SAE-LAPE requires at least 2 languages for meaningful entropy calculation!")
+        logger.error("Analysis requires at least 2 languages for meaningful comparison!")
         logger.error("With only 1 language, all features will have entropy ≈ 0")
         print(f"[DEBUG] ERROR: Only {len(languages)} language(s) specified. Need at least 2.")
         return
@@ -101,19 +102,26 @@ def main():
             else:
                 print(f"[DEBUG]     No activation data collected!")
     
-    # Run SAE-LAPE analysis
-    print(f"\n[DEBUG] ===== Running SAE-LAPE Analysis =====")
+    # Run analysis based on ranking method
+    ranking_method = getattr(args, 'ranking_method', 'sae_lape')
+    print(f"\n[DEBUG] ===== Running {ranking_method.upper()} Analysis =====")
+    
     try:
-        final_indices, features_info = extractor.compute_sae_lape(
-            topk_threshold_ratio=0.8,
-            example_rate=0.98,
-            top=100,
-            lang_specific=True
-        )
-        
-        # print(f"[DEBUG] SAE-LAPE completed")
-        # print(f"[DEBUG] final_indices type: {type(final_indices)}, length: {len(final_indices)}")
-        # print(f"[DEBUG] features_info type: {type(features_info)}, keys: {list(features_info.keys())}")
+        if ranking_method == 'magnitude':
+            final_indices, features_info = extractor.compute_magnitude_ranking(
+                top=getattr(args, 'top_k', 100),
+                top_per_layer=getattr(args, 'top_per_layer', False),
+                apply_filtering=getattr(args, 'apply_filtering', False)  # Default: no filtering (original behavior)
+            )
+            method_name = "magnitude"
+        else:  # Default to sae_lape
+            final_indices, features_info = extractor.compute_sae_lape(
+                topk_threshold_ratio=getattr(args, 'topk_threshold_ratio', 0.8),
+                example_rate=getattr(args, 'example_rate', 0.98),
+                top=getattr(args, 'top_k', 100),
+                lang_specific=getattr(args, 'lang_specific', True)
+            )
+            method_name = "sae_lape"
         
         # Check if results are empty
         if not final_indices or len(final_indices) == 0:
@@ -136,12 +144,18 @@ def main():
         for lang, info in features_info.items():
             print(f"[DEBUG] {lang} features_info:")
             print(f"[DEBUG]   indices: {len(info['indices'])}")
-            print(f"[DEBUG]   selected_probs shape: {info['selected_probs'].shape}")
-            print(f"[DEBUG]   entropies shape: {info['entropies'].shape}")
-            if len(info['entropies']) > 0:
-                print(f"[DEBUG]   entropy range: {info['entropies'].min().item():.6f} to {info['entropies'].max().item():.6f}")
+            if 'selected_probs' in info:
+                print(f"[DEBUG]   selected_probs shape: {info['selected_probs'].shape}")
+            if 'entropies' in info:
+                print(f"[DEBUG]   entropies shape: {info['entropies'].shape}")
+                if len(info['entropies']) > 0:
+                    print(f"[DEBUG]   entropy range: {info['entropies'].min().item():.6f} to {info['entropies'].max().item():.6f}")
+            if 'avg_activations' in info:
+                print(f"[DEBUG]   avg_activations shape: {info['avg_activations'].shape}")
+                if len(info['avg_activations']) > 0:
+                    print(f"[DEBUG]   avg_activations range: {info['avg_activations'].min().item():.6f} to {info['avg_activations'].max().item():.6f}")
         
-        # Save detailed features by layer and language using actual SAE-LAPE results
+        # Save detailed features by layer and language
         from utils.feature_storage_utils import save_sae_lape_features
         
         save_sae_lape_features(
@@ -152,37 +166,42 @@ def main():
             layer_names=args.layers,  # Pass the actual layer names
             dataset=args.dataset_name,
             split=args.split,
-            method="sae_lape_streaming",
-            top_k=100
+            method=method_name,
+            top_k=getattr(args, 'top_k', 100),
+            experiment_tag=getattr(args, 'experiment_tag', '')
         )
 
     except Exception as e:
-        logger.error(f"SAE-LAPE computation failed: {e}")
+        logger.error(f"{ranking_method.upper()} computation failed: {e}")
         import traceback
         traceback.print_exc()
         return
 
-    # Save results  
-    results = {
-        "final_indices": final_indices,
-        "features_info": features_info,
-        "sorted_lang": sorted(extractor.lang_to_stats.keys())
-    }
-    
-    # output_path = os.path.join(args.save_dir, f"sae_lape_{args.dataset_name}_{args.split}.pt")
-    # os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    # torch.save(results, output_path)
-    # logger.info(f"Saved results: {output_path}")
-    
-    # Print summary - with bounds checking
-    print(f"\n[DEBUG] ===== Final Summary =====")
-    sorted_langs = results["sorted_lang"]
-    for i, lang in enumerate(sorted_langs):
-        if i < len(final_indices):
-            num_features = sum(len(layer_features) for layer_features in final_indices[i])
-            logger.info(f"{lang}: {num_features} language-specific features")
-        else:
-            logger.info(f"{lang}: 0 language-specific features (no data collected)")
+    # Save combined results  
+    # if all_results:
+    #     combined_results = {
+    #         "methods": list(all_results.keys()),
+    #         "results": all_results,
+    #         "sorted_lang": sorted(extractor.lang_to_stats.keys())
+    #     }
+        
+    #     # Print summary for all methods
+    #     print(f"\n[DEBUG] ===== Final Summary for All Methods =====")
+    #     sorted_langs = combined_results["sorted_lang"]
+        
+    #     # for method, method_results in all_results.items():
+    #     #     print(f"\n[DEBUG] === {method.upper()} Results ===")
+    #     #     final_indices = method_results["final_indices"]
+            
+    #     #     for i, lang in enumerate(sorted_langs):
+    #     #         if i < len(final_indices):
+    #     #             num_features = sum(len(layer_features) for layer_features in final_indices[i])
+    #     #             logger.info(f"{method} - {lang}: {num_features} language-specific features")
+    #     #         else:
+    #     #             logger.info(f"{method} - {lang}: 0 language-specific features (no data collected)")
+    # else:
+    #     logger.error("No methods completed successfully!")
+    #     return
             
     # Additional debugging info
     logger.info("Data collection summary:")

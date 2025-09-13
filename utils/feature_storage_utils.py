@@ -13,7 +13,8 @@ def save_sae_lape_features(
     split,
     method="sae_lape",
     base_dir="identification",
-    top_k=100
+    top_k=100,
+    experiment_tag=""
 ):
     """Save SAE-LAPE results to CSV files with proper layer naming."""
     saved_files = []
@@ -26,12 +27,19 @@ def save_sae_lape_features(
         lang_info = features_info[lang]
         
         # Create mapping from (layer, feature) to entropy/prob
-        coord_to_data = {}
-        for i, (layer_idx, feat_idx) in enumerate(lang_info['indices']):
-            coord_to_data[(layer_idx, feat_idx)] = (
-                lang_info['entropies'][i].item(),
-                lang_info['selected_probs'][i].item()
-            )
+        if method == "sae_lape":
+            coord_to_data = {}
+            for i, (layer_idx, feat_idx) in enumerate(lang_info['indices']):
+                coord_to_data[(layer_idx, feat_idx)] = (
+                    lang_info['entropies'][i].item(),
+                    lang_info['selected_probs'][i].item()
+                )
+        elif method == "magnitude":
+            coord_to_data = {}
+            for i, (layer_idx, feat_idx) in enumerate(lang_info['indices']):
+                coord_to_data[(layer_idx, feat_idx)] = (
+                    lang_info['avg_activations'][i].item()
+                )
         
         # Save features for each layer using actual layer names
         for layer_idx, layer_features in enumerate(lang_indices):
@@ -51,17 +59,28 @@ def save_sae_lape_features(
             for feat_idx in layer_features:
                 coord = (layer_idx, feat_idx.item())
                 if coord in coord_to_data:
-                    entropy, prob = coord_to_data[coord]
-                    data.append({
-                        'feature_idx': feat_idx.item(),
-                        'entropy': entropy,
-                        'activation_prob': prob,
-                        'rank': len(data) + 1
-                    })
+                    if method == "sae_lape":
+                        entropy, prob = coord_to_data[coord]
+                        data.append({
+                            'feature_idx': feat_idx.item(),
+                            'entropy': entropy,
+                            'activation_prob': prob,
+                            'rank': len(data) + 1
+                        })
+                    elif method == "magnitude":
+                        avg_act = coord_to_data[coord]
+                        data.append({
+                            'feature_idx': feat_idx.item(),
+                            'avg_activation': avg_act
+                        })
             
             if data:
                 # Create directory and save using actual layer number
-                dir_path = Path(base_dir) / model_name / method / f"layer_{layer_num}" / f"{dataset}-en-de" / split
+                # Include experiment_tag as suffix to dataset folder if provided
+                dataset_folder = f"{dataset}"
+                if experiment_tag:
+                    dataset_folder += f"-{experiment_tag}"
+                dir_path = Path(base_dir) / model_name / method / f"layer_{layer_num}" / dataset_folder / split
                 dir_path.mkdir(parents=True, exist_ok=True)
                 
                 df = pd.DataFrame(data[:top_k])

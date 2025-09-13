@@ -186,6 +186,332 @@ def stack_activations_count(lang_to_stats, sorted_lang):
         global_avg_active_over_zero,
     )
 
+def stack_magnitude_stats(lang_to_stats, sorted_lang):
+    """Stack magnitude statistics for each language (new function for magnitude ranking)."""
+    print(f"\n[DEBUG] stack_magnitude_stats called")
+    print(f"[DEBUG] sorted_lang: {sorted_lang}")
+    print(f"[DEBUG] lang_to_stats keys: {list(lang_to_stats.keys())}")
+    
+    num_examples = []
+    num_tokens = []
+    activation_sums = []
+    activation_squared_sums = []
+    over_zero_token = []
+    over_zero_example = []
+
+    # Get feature dimension from first available tensor
+    H = None
+    for lang in sorted_lang:
+        print(f"[DEBUG] Checking {lang} for feature dimension")
+        if lang in lang_to_stats:
+            print(f"[DEBUG]   {lang} has {len(lang_to_stats[lang])} layers")
+            for i, layer in enumerate(lang_to_stats[lang]):
+                if layer["activation_sum"] is not None:
+                    H = layer["activation_sum"].shape[0]
+                    print(f"[DEBUG]   Found H = {H} from {lang} layer {i}")
+                    break
+        if H is not None:
+            break
+    
+    if H is None:
+        H = 16384  # Default SAE feature dimension
+        print(f"[DEBUG] No feature dimension found, using default H = {H}")
+    else:
+        print(f"[DEBUG] Using feature dimension H = {H}")
+
+    for lang in sorted_lang:
+        print(f"\n[DEBUG] Processing language: {lang}")
+        
+        if lang not in lang_to_stats:
+            print(f"[DEBUG] WARNING: {lang} not found in lang_to_stats!")
+            continue
+            
+        # Language totals
+        lang_num_examples = sum(layer["num_examples"] for layer in lang_to_stats[lang])
+        lang_num_tokens = sum(layer["num_tokens"] for layer in lang_to_stats[lang])
+        
+        print(f"[DEBUG] {lang} totals: {lang_num_examples} examples, {lang_num_tokens} tokens")
+        
+        num_examples.append(lang_num_examples)
+        num_tokens.append(lang_num_tokens)
+        
+        # Stack layers for this language
+        lang_activation_sums = []
+        lang_activation_squared_sums = []
+        lang_over_zero_token = []
+        lang_over_zero_example = []
+        
+        for i, layer in enumerate(lang_to_stats[lang]):
+            print(f"[DEBUG] Processing {lang} layer {i}")
+            
+            # Handle activation sums
+            if layer["activation_sum"] is not None:
+                activation_sum = layer["activation_sum"].cpu()
+                print(f"[DEBUG]   Layer {i} activation_sum shape: {activation_sum.shape}, sum: {activation_sum.sum().item():.6f}")
+                lang_activation_sums.append(activation_sum)
+            else:
+                print(f"[DEBUG]   Layer {i} activation_sum is None, using zeros")
+                lang_activation_sums.append(torch.zeros(H, dtype=torch.float))
+                
+            # Handle activation squared sums
+            if layer["activation_squared_sum"] is not None:
+                activation_squared_sum = layer["activation_squared_sum"].cpu()
+                print(f"[DEBUG]   Layer {i} activation_squared_sum shape: {activation_squared_sum.shape}, sum: {activation_squared_sum.sum().item():.6f}")
+                lang_activation_squared_sums.append(activation_squared_sum)
+            else:
+                print(f"[DEBUG]   Layer {i} activation_squared_sum is None, using zeros")
+                lang_activation_squared_sums.append(torch.zeros(H, dtype=torch.float))
+                
+            # Handle token counts (for filtering)
+            if layer["over_zero_token"] is not None:
+                token_count = layer["over_zero_token"].cpu()
+                print(f"[DEBUG]   Layer {i} token_count shape: {token_count.shape}, sum: {token_count.sum().item()}")
+                lang_over_zero_token.append(token_count)
+            else:
+                print(f"[DEBUG]   Layer {i} token_count is None, using zeros")
+                lang_over_zero_token.append(torch.zeros(H, dtype=torch.long))
+                
+            # Handle example counts (for filtering)
+            if layer["over_zero_example"] is not None:
+                example_count = layer["over_zero_example"].cpu()
+                print(f"[DEBUG]   Layer {i} example_count shape: {example_count.shape}, sum: {example_count.sum().item()}")
+                lang_over_zero_example.append(example_count)
+            else:
+                print(f"[DEBUG]   Layer {i} example_count is None, using zeros")
+                lang_over_zero_example.append(torch.zeros(H, dtype=torch.long))
+        
+        if not lang_activation_sums:
+            print(f"[DEBUG] WARNING: No layers processed for {lang}")
+            continue
+            
+        # Stack tensors
+        lang_activation_sums = torch.stack(lang_activation_sums)
+        lang_activation_squared_sums = torch.stack(lang_activation_squared_sums)
+        lang_over_zero_token = torch.stack(lang_over_zero_token)
+        lang_over_zero_example = torch.stack(lang_over_zero_example)
+        
+        print(f"[DEBUG] {lang} stacked shapes:")
+        print(f"[DEBUG]   activation_sums: {lang_activation_sums.shape}")
+        print(f"[DEBUG]   activation_squared_sums: {lang_activation_squared_sums.shape}")
+        print(f"[DEBUG]   over_zero_token: {lang_over_zero_token.shape}")
+        print(f"[DEBUG]   over_zero_example: {lang_over_zero_example.shape}")
+        
+        activation_sums.append(lang_activation_sums)
+        activation_squared_sums.append(lang_activation_squared_sums)
+        over_zero_token.append(lang_over_zero_token)
+        over_zero_example.append(lang_over_zero_example)
+
+    if not activation_sums:
+        print(f"[DEBUG] ERROR: No data collected for any language!")
+        return None
+    
+    # Final stacking across languages
+    num_examples = torch.tensor(num_examples, dtype=torch.long)
+    num_tokens = torch.tensor(num_tokens, dtype=torch.long)
+    activation_sums = torch.stack(activation_sums, dim=-1)  # (layers, hidden_dim, langs)
+    activation_squared_sums = torch.stack(activation_squared_sums, dim=-1)
+    over_zero_token = torch.stack(over_zero_token, dim=-1)
+    over_zero_example = torch.stack(over_zero_example, dim=-1)
+
+    print(f"[DEBUG] Final tensor shapes:")
+    print(f"[DEBUG]   num_examples: {num_examples.shape}")
+    print(f"[DEBUG]   num_tokens: {num_tokens.shape}")
+    print(f"[DEBUG]   activation_sums: {activation_sums.shape}")
+    print(f"[DEBUG]   activation_squared_sums: {activation_squared_sums.shape}")
+    print(f"[DEBUG]   over_zero_token: {over_zero_token.shape}")
+    print(f"[DEBUG]   over_zero_example: {over_zero_example.shape}")
+
+    return (
+        num_examples,
+        num_tokens,
+        activation_sums,
+        activation_squared_sums,
+        over_zero_token,
+        over_zero_example,
+    )
+
+def magnitude_ranking(
+    num_examples,
+    num_tokens,
+    activation_sums,
+    activation_squared_sums,
+    over_zero_token,
+    over_zero_example,
+    sorted_lang,
+    top=100,
+    top_per_layer=False,
+    apply_filtering=False
+):
+    """Magnitude-based ranking implementation following the original algorithm closely.
+    
+    Original algorithm:
+    1. Calculate average activations per language
+    2. For each language: avg_diff = lang_avg - mean(other_langs_avg)
+    3. Sort features by activation difference (descending)
+    4. Return top-k indices
+    
+    Args:
+        apply_filtering: If True, applies SAE-LAPE style filtering. If False, uses all features.
+    """
+    print(f"\n[DEBUG] magnitude_ranking called")
+    print(f"[DEBUG] Parameters:")
+    print(f"[DEBUG]   top: {top}")
+    print(f"[DEBUG]   top_per_layer: {top_per_layer}")
+    print(f"[DEBUG]   apply_filtering: {apply_filtering}")
+    print(f"[DEBUG]   sorted_lang: {sorted_lang}")
+    
+    num_layers, hidden_dim, num_langs = activation_sums.size()
+    print(f"[DEBUG] Tensor dimensions: layers={num_layers}, hidden_dim={hidden_dim}, langs={num_langs}")
+    
+    print(f"[DEBUG] Input data summary:")
+    print(f"[DEBUG]   num_examples: {num_examples}")
+    print(f"[DEBUG]   num_tokens: {num_tokens}")
+    print(f"[DEBUG]   activation_sums sum per lang: {activation_sums.sum(dim=(0,1))}")
+
+    # Calculate average activations per language - equivalent to original avg_act
+    print(f"\n[DEBUG] Calculating average activations...")
+    avg_activations = activation_sums.float() / num_tokens.float().unsqueeze(0).unsqueeze(0)
+    print(f"[DEBUG] avg_activations shape: {avg_activations.shape}")
+    print(f"[DEBUG] avg_activations min: {avg_activations.min().item():.8f}")
+    print(f"[DEBUG] avg_activations max: {avg_activations.max().item():.8f}")
+    print(f"[DEBUG] avg_activations mean: {avg_activations.mean().item():.8f}")
+    
+    # Optional filtering (can be disabled to match original exactly)
+    valid_features = None
+    if apply_filtering:
+        print(f"\n[DEBUG] Applying feature filtering...")
+        
+        # Example rate filtering
+        example_rate = 0.98
+        num_examples_thresh = (num_examples.float() * example_rate).long()
+        print(f"[DEBUG] num_examples_thresh: {num_examples_thresh}")
+        
+        over_zero_example_filter = (over_zero_example >= num_examples_thresh.unsqueeze(0).unsqueeze(0)).any(dim=-1)
+        print(f"[DEBUG] Features passing example filter: {over_zero_example_filter.sum().item()}/{over_zero_example_filter.numel()}")
+
+        # Token rate filtering
+        hfl_rate = 0.1
+        num_tokens_thresh = (num_tokens.float() * hfl_rate).long()
+        print(f"[DEBUG] num_tokens_thresh: {num_tokens_thresh}")
+        
+        over_zero_token_filter = (over_zero_token > num_tokens_thresh.unsqueeze(0).unsqueeze(0)).any(dim=-1)
+        print(f"[DEBUG] Features passing token filter: {over_zero_token_filter.sum().item()}/{over_zero_token_filter.numel()}")
+
+        # Apply filters
+        valid_features = over_zero_example_filter & over_zero_token_filter
+        print(f"[DEBUG] valid_features (passing both filters): {valid_features.sum().item()}/{valid_features.numel()}")
+    else:
+        print(f"\n[DEBUG] Skipping filtering - using all features (original algorithm behavior)")
+    
+    # Calculate activation differences for each language (matches original algorithm)
+    final_indices = []
+    features_info = {}
+    
+    for lang_idx, lang in enumerate(sorted_lang):
+        print(f"\n[DEBUG] Processing {lang} (index {lang_idx})...")
+        
+        # Original algorithm: avg_act_difference_per_lan = avg_act_per_lan[i] - torch.cat([avg_act_per_lan[:i], avg_act_per_lan[i+1:]], dim=0).mean(dim=0)
+        other_langs_mask = torch.ones(num_langs, dtype=torch.bool)
+        other_langs_mask[lang_idx] = False
+        
+        this_lang_activations = avg_activations[:, :, lang_idx]  # (layers, hidden_dim)
+        other_langs_activations = avg_activations[:, :, other_langs_mask].mean(dim=-1)  # (layers, hidden_dim)
+        
+        activation_differences = this_lang_activations - other_langs_activations
+        print(f"[DEBUG] {lang} activation_differences shape: {activation_differences.shape}")
+        print(f"[DEBUG] {lang} activation_differences range: {activation_differences.min().item():.6f} to {activation_differences.max().item():.6f}")
+        
+        # Apply filtering only if requested
+        if apply_filtering and valid_features is not None:
+            activation_differences[~valid_features] = -float('inf')
+            print(f"[DEBUG] {lang} valid activation_differences after filtering: {(activation_differences != -float('inf')).sum().item()}")
+        
+        # Flatten and sort (matches original: torch.sort(avg_act_difference_per_lan, descending=True))
+        flattened_diffs = activation_differences.flatten()
+        
+        if apply_filtering:
+            valid_mask = flattened_diffs != -float('inf')
+            if valid_mask.sum() == 0:
+                print(f"[DEBUG] No valid features for {lang}")
+                final_indices.append([torch.tensor([], dtype=torch.long) for _ in range(num_layers)])
+                features_info[lang] = {"indices": [], "avg_activations": torch.tensor([])}
+                continue
+            valid_diffs = flattened_diffs[valid_mask]
+            valid_indices = torch.where(valid_mask)[0]
+        else:
+            # No filtering - use all features
+            valid_diffs = flattened_diffs
+            valid_indices = torch.arange(len(flattened_diffs))
+        
+        # Sort by activation difference (descending) - matches original
+        sorted_diffs, sort_order = valid_diffs.sort(descending=True)
+        sorted_indices = valid_indices[sort_order]
+        
+        print(f"[DEBUG] {lang} sorted_diffs range: {sorted_diffs.min().item():.6f} to {sorted_diffs.max().item():.6f}")
+        
+        # Convert to layer/feature coordinates
+        layer_indices = sorted_indices // hidden_dim
+        feature_indices = sorted_indices % hidden_dim
+        
+        print(f"[DEBUG] {lang} layer_indices range: {layer_indices.min().item()} to {layer_indices.max().item()}")
+        print(f"[DEBUG] {lang} feature_indices range: {feature_indices.min().item()} to {feature_indices.max().item()}")
+        
+        # Apply top-k selection (this is an addition to the original but useful)
+        lang_coords = list(zip(layer_indices.tolist(), feature_indices.tolist()))
+        
+        if top and len(lang_coords) > 0:
+            print(f"[DEBUG] Applying top-{top} filter...")
+            if top_per_layer:
+                layer_counts = [0] * num_layers
+                filtered_coords = []
+                for layer_idx, feat_idx in lang_coords:
+                    if layer_counts[layer_idx] < top:
+                        filtered_coords.append((layer_idx, feat_idx))
+                        layer_counts[layer_idx] += 1
+                lang_coords = filtered_coords
+                print(f"[DEBUG] After top-per-layer filter: {len(lang_coords)} features")
+            else:
+                lang_coords = lang_coords[:top]
+                print(f"[DEBUG] After top filter: {len(lang_coords)} features")
+        
+        # Organize by layer
+        layer_features = [[] for _ in range(num_layers)]
+        for layer_idx, feat_idx in lang_coords:
+            layer_features[layer_idx].append(feat_idx)
+        
+        # Convert to tensors
+        for layer_idx in range(num_layers):
+            layer_features[layer_idx] = torch.tensor(layer_features[layer_idx], dtype=torch.long)
+            if len(layer_features[layer_idx]) > 0:
+                print(f"[DEBUG] {lang} layer {layer_idx}: {len(layer_features[layer_idx])} features")
+        
+        final_indices.append(layer_features)
+        
+        # Store feature info
+        if lang_coords:
+            # Get the activation differences for selected features
+            selected_diffs = []
+            for layer_idx, feat_idx in lang_coords:
+                if apply_filtering and valid_features is not None:
+                    diff_val = activation_differences[layer_idx, feat_idx].item()
+                else:
+                    diff_val = activation_differences[layer_idx, feat_idx].item()
+                selected_diffs.append(diff_val)
+            
+            features_info[lang] = {
+                "indices": lang_coords,
+                "avg_activations": torch.tensor(selected_diffs, dtype=torch.float)
+            }
+            print(f"[DEBUG] {lang} feature info: {len(lang_coords)} features stored")
+        else:
+            features_info[lang] = {"indices": [], "avg_activations": torch.tensor([])}
+
+    print(f"\n[DEBUG] magnitude_ranking completed")
+    total_features = sum(len(info["indices"]) for info in features_info.values())
+    print(f"[DEBUG] Total features across all languages: {total_features}")
+    
+    return final_indices, features_info
+
 def sae_lape(
     num_examples,
     num_tokens,
