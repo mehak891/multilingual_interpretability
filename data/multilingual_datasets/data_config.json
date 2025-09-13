@@ -52,6 +52,20 @@
       "supported_languages": ["en", "fr", "de", "es", "it", "pt", "ru", "zh", "ja", "ko", "ar", "hi"],
       "language_param_type": "pair",
       "language_pairs": ["en-fr", "en-de", "en-es", "en-it", "en-pt", "en-ru", "en-zh", "en-ja", "en-ko", "en-ar", "en-hi"]
+    },
+    "jw300": {
+      "name": "sentence-transformers/parallel-sentences-jw300",
+      "text_fields": ["sentence"],
+      "split_configs": ["train"],
+      "supported_languages": ["en", "fr", "de", "es", "it", "pt", "ru", "zh", "ko", "ar", "hi"],
+      "language_param_type": "parallel_subset"
+    },
+    "europarl": {
+      "name": "sentence-transformers/parallel-sentences-europarl",
+      "text_fields": ["sentence"],
+      "split_configs": ["train"],
+      "supported_languages": ["en", "fr", "de", "es", "it", "pt"],
+      "language_param_type": "parallel_subset"
     }
   }
 }

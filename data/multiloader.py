@@ -1,5 +1,3 @@
-# data/loader.py
-
 import os
 import pickle
 import json
@@ -9,6 +7,8 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset, Dataset as HFDatasetType
 from transformers import AutoTokenizer, AutoModelForCausalLM, DataCollatorWithPadding
 import torch
+import random
+
 
 class MultilingualDatasetManager:
     """Manages multiple parallel multilingual datasets with unified language encoding."""
@@ -57,12 +57,13 @@ class MultilingualDatasetManager:
     def _load_dataset_split(self, dataset_name: str, common_lang: str, split: str) -> Optional[HFDatasetType]:
         """Load a single dataset split with proper language handling"""
         config = self.dataset_configs[dataset_name]
-        dataset_lang_code = self._get_dataset_language_code(dataset_name, common_lang)
+        dataset_lang_code = None
+        if config['language_param_type'] != "parallel_subset":
+            dataset_lang_code = self._get_dataset_language_code(dataset_name, common_lang)
         
         try:
             if config['language_param_type'] == 'flores_subset':
                 dataset = load_dataset(config['name'], "all", split=split)
-                # Extract the language column and convert to dataset
                 import pandas as pd
                 df = pd.DataFrame({"sentence": list(dataset[f"sentence_{dataset_lang_code}"])})
                 dataset = HFDatasetType.from_pandas(df)
@@ -71,7 +72,6 @@ class MultilingualDatasetManager:
                 dataset = load_dataset(config['name'], dataset_lang_code, split=split)
 
             elif config['language_param_type'] == 'filter':
-                # Load full dataset and filter by language
                 dataset = load_dataset(config['name'], split=split)
                 if 'language' in dataset.column_names:
                     dataset = dataset.filter(lambda x: x['language'] == dataset_lang_code)
@@ -79,25 +79,42 @@ class MultilingualDatasetManager:
                     dataset = dataset.filter(lambda x: x['lang'] == dataset_lang_code)
                     
             elif config['language_param_type'] == 'pair':
-                # Translation pairs (like wmt, opus100)
                 if common_lang == 'en':
-                    # For English, we need to find which pairs it's part of
                     available_pairs = config.get('language_pairs', [])
                     en_pairs = [pair for pair in available_pairs if pair.startswith('en-')]
                     if en_pairs:
-                        # Load first available English pair
                         dataset = load_dataset(config['name'], en_pairs[0], split=split)
                     else:
                         return None
                 else:
-                    # For non-English, look for en-{lang} pair
                     pair = f"en-{common_lang}"
                     if pair in config.get('language_pairs', []):
                         dataset = load_dataset(config['name'], pair, split=split)
                     else:
                         return None
+
+            elif config['language_param_type'] == 'parallel_subset':
+                # For datasets like JW300 / Europarl (subset = en-xx, split=train)
+                if common_lang == 'en':
+                    # Pick first non-English supported lang to construct a subset
+                    non_en = config['supported_languages'][1]
+                    subset_name = f"en-{non_en}"
+                    dataset = load_dataset(config['name'], subset_name, split=split)
+                    col = "english"
+                else:
+                    subset_name = f"en-{common_lang}"
+                    dataset = load_dataset(config['name'], subset_name, split=split)
+                    col = "non_english"
+                
+                # Select up to 1K examples
+                dataset = dataset.select(range(min(1000, len(dataset))))
+
+                # Normalize into "sentence" column
+                import pandas as pd
+                df = pd.DataFrame({"sentence": list(dataset[col])})
+                dataset = HFDatasetType.from_pandas(df)
+
             else:
-                # Default: load without language parameter
                 dataset = load_dataset(config['name'], split=split)
                 
             return dataset
@@ -134,7 +151,6 @@ class MultilingualDatasetManager:
             for split in splits:
                 cache_path = self._get_cache_path(dataset_name, common_lang, split)
                 
-                # Load from cache if exists and not forcing redownload
                 if cache_path.exists() and not force_redownload:
                     self._log(f"Loading cached {dataset_name}-{common_lang}-{split}")
                     with open(cache_path, 'rb') as f:
@@ -142,7 +158,6 @@ class MultilingualDatasetManager:
                         lang_data[split] = dataset
                     continue
                 
-                # Download fresh data
                 self._log(f"Downloading {dataset_name}-{common_lang}-{split}")
                 dataset = self._load_dataset_split(dataset_name, common_lang, split)
                 
@@ -152,7 +167,6 @@ class MultilingualDatasetManager:
                     
                     for ex in dataset.select(range(min(3, len(dataset)))):
                         self._log(f"Example: {ex}")
-                    # Cache the split
                     with open(cache_path, 'wb') as f:
                         pickle.dump(dataset, f)
             
@@ -197,14 +211,21 @@ class MultilingualDatasetManager:
                          split: str,
                          batch_size: int = 32,
                          shuffle: bool = False,
-                         num_workers: int = 0) -> Optional[DataLoader]:
-        """Create a PyTorch DataLoader using common language code"""
+                         num_workers: int = 0,
+                         shuffle_words: bool = False) -> Optional[DataLoader]:
+        """Create a PyTorch DataLoader using common language code
+        
+        Args:
+            shuffle_words: If True, shuffle words inside each sentence before tokenization
+        """
         hf_dataset = self.get_dataset(dataset_name, language, split)
         if hf_dataset is None:
             return None
         
         text_field = self.dataset_configs[dataset_name]['text_fields'][0]
-        pytorch_dataset = TokenizedDataset(hf_dataset, self.tokenizer, text_field, self.max_length)
+        pytorch_dataset = TokenizedDataset(
+            hf_dataset, self.tokenizer, text_field, self.max_length, shuffle_words=shuffle_words
+        )
         collator = DataCollatorWithPadding(self.tokenizer)
         
         return DataLoader(
@@ -259,18 +280,25 @@ class MultilingualDatasetManager:
 class TokenizedDataset(Dataset):
     """PyTorch Dataset for tokenized text data"""
     
-    def __init__(self, hf_dataset: HFDatasetType, tokenizer, text_field: str, max_length: int):
+    def __init__(self, hf_dataset: HFDatasetType, tokenizer, text_field: str, max_length: int, shuffle_words: bool = False):
         self.hf_dataset = hf_dataset
         self.tokenizer = tokenizer
         self.text_field = text_field
         self.max_length = max_length
+        self.shuffle_words = shuffle_words
     
     def __len__(self):
         return len(self.hf_dataset)
     
     def __getitem__(self, idx):
-        # print(self.hf_dataset[0])
         text = self.hf_dataset[idx][self.text_field]
+        
+        
+        if self.shuffle_words:
+            words = text.split()
+            random.shuffle(words)
+            text = " ".join(words)
+        
         encoded = self.tokenizer(
             text,
             truncation=True,
@@ -279,105 +307,3 @@ class TokenizedDataset(Dataset):
             return_tensors='pt'
         )
         return {k: v.squeeze(0) for k, v in encoded.items()}
-
-
-# # Legacy Dataset Classes (integrated from original file)
-# class HFDataset(Dataset):
-#     """Legacy HF Dataset class for backward compatibility"""
-#     def __init__(self, dataset_name: str, model_name: str, text_field: str, 
-#                  split: str, language: str, max_length: int, logger):
-#         self.dataset_name = dataset_name
-#         self.split = split
-#         self.logger = logger
-#         self.language = language
-        
-#         try:
-#             if self.language:
-#                 self.dataset = load_dataset(self.dataset_name, language=self.language, split=self.split)
-#             else:
-#                 self.dataset = load_dataset(self.dataset_name, split=self.split)
-#         except Exception as e:
-#             self.logger.error(f"Failed to load dataset: {e}")
-#             raise e
-            
-#         self.text_field = text_field
-#         self.max_length = max_length
-#         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-#         self.tokenizer.pad_token = self.tokenizer.eos_token
-#         self.tokenized_dataset = self.dataset.map(self.tokenize_fn, remove_columns=self.dataset.column_names)
-    
-#     def __len__(self):
-#         return len(self.dataset)
-
-#     def tokenize_fn(self, item):
-#         return self.tokenizer(
-#             item[f"{self.text_field}"],
-#             truncation=True,
-#             padding="max_length",
-#             max_length=128
-#         )
-
-#     def __getitem__(self, idx):  # Fixed the method name
-#         text = self.dataset[idx][self.text_field]
-#         encoded = self.tokenizer(text=text, truncation=True, padding='max_length',
-#                     max_length=self.max_length, return_tensors='pt')
-#         return {k: v.squeeze(0) for k, v in encoded.items()}
-
-
-# class TextFileDataset(Dataset):
-#     """Dataset for loading text from local files"""
-#     def __init__(self, file_path: str, tokenizer_name: str, max_length: int):
-#         if not os.path.isfile(file_path):
-#             raise FileNotFoundError(file_path)
-#         self.file_path = file_path
-#         self.max_length = max_length
-#         with open(file_path, 'r') as f:
-#             self.lines = [ln.rstrip('\n') for ln in f]
-#         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-#         self.tokenizer.pad_token = self.tokenizer.eos_token
-
-#     def __len__(self):
-#         return len(self.lines)
-
-#     def __getitem__(self, idx):
-#         text = self.lines[idx]
-#         encoded = self.tokenizer(
-#             text,
-#             truncation=True,
-#             padding='max_length',
-#             max_length=self.max_length,
-#             return_tensors='pt'
-#         )
-#         return {k: v.squeeze(0) for k, v in encoded.items()}
-
-
-# # Convenience functions
-# def create_manager(storage_dir: str = "./multilingual_datasets",
-#                   config_path: str = "dataset_configs.json",
-#                   verbose: bool = False) -> MultilingualDatasetManager:
-#     """Create a dataset manager"""
-#     return MultilingualDatasetManager(storage_dir=storage_dir, config_path=config_path, verbose=verbose)
-
-
-# def quick_setup(languages: List[str] = None, 
-#                datasets: List[str] = None,
-#                verbose: bool = False) -> MultilingualDatasetManager:
-#     """Quick setup with minimal configuration using common language codes"""
-#     manager = create_manager(verbose=verbose)
-    
-#     if datasets:
-#         for dataset_name in datasets:
-#             if dataset_name in manager.dataset_configs:
-#                 manager.download_and_cache_dataset(dataset_name, languages=languages)
-#     else:
-#         manager.download_all_datasets(languages=languages)
-    
-#     return manager
-
-
-# def build_textfile_dataloader(file_path: str, tokenizer_name: str, batch_size: int, 
-#                             max_length: int, num_workers: int = 0) -> DataLoader:
-#     """Build dataloader from text file"""
-#     dataset = TextFileDataset(file_path=file_path, tokenizer_name=tokenizer_name, max_length=max_length)
-#     collator = DataCollatorWithPadding(dataset.tokenizer)
-#     return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, collate_fn=collator)

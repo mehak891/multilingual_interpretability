@@ -28,6 +28,7 @@ def get_args():
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--shuffle', type=bool, default=False)
+    parser.add_argument('--shuffle_words', type=bool, default=False, help='Shuffle words inside each sentence before tokenization')
 
 
     # Interpretability
@@ -83,6 +84,7 @@ class Config:
         self.batch_size = args.batch_size
         self.text_field = args.text_field
         self.max_length = args.max_length
+        self.shuffle_words = args.shuffle_words
 
         # Interpretability
         self.method = args.method

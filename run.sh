@@ -8,6 +8,7 @@ python3 main.py --dataset "flores_plus" \
     --text_field "text" \
     --batch_size 16 \
     --layers "layers.0.mlp" \
-    --experiment_tag "magnitude_exp"
+    --experiment_tag "magnitude_exp" \
+    --shuffle_words False
 
 # en de fr it pt hi es ru tr ja ko zh

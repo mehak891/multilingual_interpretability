@@ -70,7 +70,8 @@ def main():
             print(f"[DEBUG] Creating dataloader for {lang}...")
             data_loader = dataset_manager.create_dataloader(
                 args.dataset_name, lang, args.split,
-                batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers
+                batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers,
+                shuffle_words=getattr(args, 'shuffle_words', False)
             )
             
             print(f"[DEBUG] Dataloader created, type: {type(data_loader)}")

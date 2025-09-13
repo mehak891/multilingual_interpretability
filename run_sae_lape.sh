@@ -8,7 +8,8 @@ python3 main.py --dataset "flores_plus" \
     --text_field "text" \
     --batch_size 16 \
     --layers "layers.0.mlp" \
-    --experiment_tag "sae_lape_devtest"
+    --experiment_tag "sae_lape_devtest" \
+    --shuffle_words False
 
 python3 main.py --dataset "flores_plus" \
     --split "dev" \
@@ -20,4 +21,5 @@ python3 main.py --dataset "flores_plus" \
     --text_field "text" \
     --batch_size 16 \
     --layers "layers.0.mlp" \
-    --experiment_tag "sae_lape_dev"
+    --experiment_tag "sae_lape_dev" \
+    --shuffle_words False
