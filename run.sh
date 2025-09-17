@@ -7,8 +7,8 @@ python3 main.py --dataset "flores_plus" \
     --sae_model "/home/models/sae-Llama-3.2-1B-131k" \
     --text_field "text" \
     --batch_size 16 \
-    --layers "layers.0.mlp" \
+    --layers "layers.1.mlp" \
     --experiment_tag "magnitude_exp" \
-    --shuffle_words False
+    --debug
 
 # en de fr it pt hi es ru tr ja ko zh

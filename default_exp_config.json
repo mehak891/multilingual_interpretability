@@ -1,19 +1,29 @@
 {
     "experiment_name": "default_exp",
-    "experiment_tag": "",
+    "experiment_tag": "thresh-80",
+    "debug": false,
     "seed": 42,
     "device": "cuda:0",
     "model_path": "/home/models/meta-llama_Llama-3.2-1B",
     "model_name": "Llama-3.2-1B",
     "model_type": "llm",
     "layers": [
-        "layers.0.mlp"
+        "layers.1.mlp"
     ],
-    "dataset_name": "flores_plus",
-    "split": "dev",
+    "dataset_name": "jw300",
+    "split": "train",
     "languages": [
         "en",
-        "de"
+        "de",
+        "fr",
+        "it",
+        "pt",
+        "hi",
+        "es",
+        "ru",
+        "tr",
+        "ja",
+        "ko"
     ],
     "batch_size": 16,
     "text_field": "text",

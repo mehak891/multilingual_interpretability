@@ -57,7 +57,7 @@
       "name": "sentence-transformers/parallel-sentences-jw300",
       "text_fields": ["sentence"],
       "split_configs": ["train"],
-      "supported_languages": ["en", "fr", "de", "es", "it", "pt", "ru", "zh", "ko", "ar", "hi"],
+      "supported_languages": ["en", "fr", "de", "es", "it", "pt", "ru", "ja", "ko", "ar", "hi"],
       "language_param_type": "parallel_subset"
     },
     "europarl": {

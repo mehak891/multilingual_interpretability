@@ -212,7 +212,8 @@ class MultilingualDatasetManager:
                          batch_size: int = 32,
                          shuffle: bool = False,
                          num_workers: int = 0,
-                         shuffle_words: bool = False) -> Optional[DataLoader]:
+                         shuffle_words: bool = False,
+                         debug: bool = False) -> Optional[DataLoader]:
         """Create a PyTorch DataLoader using common language code
         
         Args:
@@ -224,7 +225,7 @@ class MultilingualDatasetManager:
         
         text_field = self.dataset_configs[dataset_name]['text_fields'][0]
         pytorch_dataset = TokenizedDataset(
-            hf_dataset, self.tokenizer, text_field, self.max_length, shuffle_words=shuffle_words
+            hf_dataset, self.tokenizer, text_field, self.max_length, shuffle_words=shuffle_words, debug=debug
         )
         collator = DataCollatorWithPadding(self.tokenizer)
         
@@ -280,12 +281,13 @@ class MultilingualDatasetManager:
 class TokenizedDataset(Dataset):
     """PyTorch Dataset for tokenized text data"""
     
-    def __init__(self, hf_dataset: HFDatasetType, tokenizer, text_field: str, max_length: int, shuffle_words: bool = False):
+    def __init__(self, hf_dataset: HFDatasetType, tokenizer, text_field: str, max_length: int, shuffle_words: bool = False, debug: bool = False):
         self.hf_dataset = hf_dataset
         self.tokenizer = tokenizer
         self.text_field = text_field
         self.max_length = max_length
         self.shuffle_words = shuffle_words
+        self.debug = debug
     
     def __len__(self):
         return len(self.hf_dataset)
@@ -293,8 +295,9 @@ class TokenizedDataset(Dataset):
     def __getitem__(self, idx):
         text = self.hf_dataset[idx][self.text_field]
         
-        
         if self.shuffle_words:
+            if self.debug:
+                print("[DEBUG] Shuffling words to test word order significance.")
             words = text.split()
             random.shuffle(words)
             text = " ".join(words)

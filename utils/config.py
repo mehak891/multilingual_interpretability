@@ -11,6 +11,7 @@ def get_args():
     # General
     parser.add_argument('--experiment_name', type=str, default='default_exp')
     parser.add_argument('--experiment_tag', type=str, default='', help='Tag to append to dataset folder names for organizing results')
+    parser.add_argument('--debug', action='store_true', default=False, help='Enable debug mode for verbose logging')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--device', type=str, default='cuda:0')
 
@@ -27,8 +28,8 @@ def get_args():
     parser.add_argument('--max_length', type=int, default=512)
     parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--num_workers', type=int, default=1)
-    parser.add_argument('--shuffle', type=bool, default=False)
-    parser.add_argument('--shuffle_words', type=bool, default=False, help='Shuffle words inside each sentence before tokenization')
+    parser.add_argument('--shuffle', action='store_true', default=False)
+    parser.add_argument('--shuffle_words', action='store_true', default=False, help='Shuffle words inside each sentence before tokenization')
 
 
     # Interpretability
@@ -62,12 +63,18 @@ def get_logger(name='getInterLogger', log_file='Interpretability.log', level=log
         logger.addHandler(console)
     return logger
 
+def debug_logger(message, debug_mode=False):
+    """Print debug message only if debug mode is enabled"""
+    if debug_mode:
+        print(f"[DEBUG] {message}")
+
 class Config:
     def __init__(self):
         args = get_args()
         print(args)
         self.experiment_name = args.experiment_name
         self.experiment_tag = args.experiment_tag
+        self.debug = args.debug
         self.seed = args.seed
         self.device = args.device
 
