@@ -6,4 +6,5 @@ analysis
 gpu_scripts
 lang2vec_probing/results
 lang2vec_probing/features
+lang2vec_probing/visualizations/
 *.log

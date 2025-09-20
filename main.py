@@ -118,7 +118,7 @@ def main():
             method_name = "magnitude"
         else:  # Default to sae_lape
             final_indices, features_info = extractor.compute_sae_lape(
-                topk_threshold_ratio=getattr(args, 'topk_threshold_ratio', 0.8),
+                topk_threshold_ratio=getattr(args, 'topk_threshold_ratio', 0.5),
                 example_rate=getattr(args, 'example_rate', 0.98),
                 top=getattr(args, 'top_k', 100),
                 lang_specific=getattr(args, 'lang_specific', True)
