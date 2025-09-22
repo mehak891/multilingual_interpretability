@@ -12,14 +12,18 @@ class HFDataset(Dataset):
                  text_field: str,
                  split: str,
                  language: str,
-                 max_length: int,logger):
+                 subset: str,
+                 max_length: int, logger):
         self.dataset_name = dataset_name
-        self.split =split
+        self.split = split
         self.logger = logger
         self.language = language
+        self.subset = subset
         try:
             if self.language:
                 self.dataset = load_dataset(self.dataset_name,language=self.language,split=self.split)
+            elif self.subset:
+                self.dataset = load_dataset(self.dataset_name,name=self.subset,split=self.split)
             else:
                 self.dataset = load_dataset(self.dataset_name,split=self.split)
         except Exception as e:
@@ -56,6 +60,7 @@ class HFDatasetLoader:
                  text_field: str,
                  split: str,
                  language: str,
+                 subset: str,
                  batch_size: int,
                  max_length: int,
                  num_workers: int, logger):
@@ -67,6 +72,7 @@ class HFDatasetLoader:
         self.model_name = model_name
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.subset = subset
         self.logger = logger
         self.dataset = None
         self.dataset_obj = None
@@ -95,6 +101,7 @@ class HFDatasetLoader:
             text_field=self.text_field,
             split=self.split,
             language=self.language,
+            subset = self.subset,
             max_length=self.max_length,
             logger=self.logger
         )

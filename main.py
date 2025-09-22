@@ -7,6 +7,7 @@ from data.multiloader import MultilingualDatasetManager
 from models import loader as m_loader
 from utils.streaming_activation_extractor import StreamingExtractor
 
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 sys.path.append(os.path.abspath('.'))
 logger = config.get_logger()
 args = config.Config()
@@ -51,6 +52,7 @@ def main():
     debug_logger("Loading SAE...", args.debug)
     sae_loader = m_loader.SAELoader(args.sae_model, args.layers, args.device, logger)
     saes = sae_loader.sae_model
+
     debug_logger(f"SAE loaded: {type(saes)}", args.debug)
     debug_logger(f"SAE keys: {list(saes.keys())}", args.debug)
     
