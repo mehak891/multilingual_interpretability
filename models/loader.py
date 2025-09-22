@@ -71,8 +71,8 @@ class SAELoader:
         self.load_sae()
 
     def load_sae(self):
-        self.logger.info(f"Loading Sae model '{self.model_name}'")
-        self.sae_model = Sae.load_many(self.model_name, layers=self.layers)
+        self.logger.info(f"Loading Sae model '{self.model_name}' for layers {self.layers}")
+        self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
         #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
         self.logger.info(f"Successfully loaded Sae model on '{self.device}'")
 

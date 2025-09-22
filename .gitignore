@@ -1,0 +1,10 @@
+**__pycache__
+Interpretability.log
+identification/*
+data/multilingual_datasets/*
+analysis
+gpu_scripts
+lang2vec_probing/results
+lang2vec_probing/features
+lang2vec_probing/visualizations/
+*.log
