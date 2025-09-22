@@ -7,6 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Rectangle
+import re
+from collections import defaultdict
 
 def load_ranked_list(path):
     """Load ranked list from CSV by taking the first column in order."""
@@ -59,46 +61,93 @@ def compare_lists(list1, list2, k=50):
         "kendall": kendall,
         "precision@k": overlap["precision"],
         "jaccard@k": overlap["jaccard"],
-        "rbo": rbo_score
+        "rbo": rbo_score,
+        "common_neurons": common,
+        "n_common": len(common)
     }
+
+def parse_config_path(path):
+    """Parse configuration details from file path."""
+    parts = path.parts
+    config = {}
+    
+    if "identification" not in parts:
+        return None
+        
+    idx = parts.index("identification")
+    
+    # Parse model
+    config['model'] = parts[idx + 1] if idx + 1 < len(parts) else "NA"
+    
+    # Parse method
+    config['method'] = parts[idx + 2] if idx + 2 < len(parts) else "NA"
+    
+    # Parse layer
+    config['layer'] = parts[idx + 3] if idx + 3 < len(parts) else "NA"
+    
+    # Parse dataset configuration (contains dataset, threshold, shuffle info)
+    if idx + 4 < len(parts):
+        dataset_config = parts[idx + 4]
+        config['dataset_config'] = dataset_config
+        
+        # Parse dataset name
+        if 'europarl' in dataset_config:
+            config['dataset'] = 'europarl'
+        elif 'flores_plus' in dataset_config:
+            config['dataset'] = 'flores_plus'
+        elif 'jw300' in dataset_config:
+            config['dataset'] = 'jw300'
+        else:
+            config['dataset'] = dataset_config
+        
+        # Parse threshold
+        thresh_match = re.search(r'thresh-(\d+)', dataset_config)
+        config['threshold'] = thresh_match.group(1) if thresh_match else 'NA'
+        
+        # Parse shuffle status
+        config['shuffle'] = 'shuffled' if 'shuffle' in dataset_config else 'original'
+        
+        # Parse if it's scratch
+        config['is_scratch'] = 'scratch' in dataset_config
+        
+        # Parse special configurations (e.g., en-de-ja-ko)
+        if 'en-de-ja-ko' in dataset_config:
+            config['lang_subset'] = 'en-de-ja-ko'
+        else:
+            config['lang_subset'] = 'all'
+    
+    # Parse split
+    config['split'] = parts[idx + 5] if idx + 5 < len(parts) else "NA"
+    
+    # Parse language
+    config['lang'] = path.stem
+    
+    return config
 
 def collect_files(base_dir, include_words=None, exclude_words=None, layers=None):
     csv_files = list(Path(base_dir).rglob("*.csv"))
     entries = []
 
     for f in csv_files:
-        parts = f.parts
-        if "identification" not in parts:
+        config = parse_config_path(f)
+        if not config:
             continue
-
-        idx = parts.index("identification")
-
-        model = parts[idx + 1] if idx + 1 < len(parts) else "NA"
-        method = parts[idx + 2] if idx + 2 < len(parts) else "NA"
-        layer = parts[idx + 3] if idx + 3 < len(parts) else "NA"
-        dataset = parts[idx + 4] if idx + 4 < len(parts) else "NA"
-        split = parts[idx + 5] if idx + 5 < len(parts) else "NA"
-
-        lang = f.stem
-        config = f"{method}/{dataset}/{split}"
         
-        # Apply layer filter if specified
-        if layers:
-            if layer not in layers:
-                continue
+        # Apply layer filter
+        if layers and config['layer'] not in layers:
+            continue
         
-        # Apply include filter if specified
-        if include_words:
-            if not any(word in config for word in include_words):
-                continue
+        # Apply include/exclude filters
+        config_str = f"{config['method']}/{config['dataset_config']}/{config['split']}"
         
-        # Apply exclude filter if specified
-        if exclude_words:
-            if any(word in config for word in exclude_words):
-                continue
+        if include_words and not any(word in config_str for word in include_words):
+            continue
         
-        entries.append((lang, layer, config, f))
-
+        if exclude_words and any(word in config_str for word in exclude_words):
+            continue
+        
+        entries.append((config, f))
+    
     return entries
 
 def create_language_heatmap(df_lang, layer_name, lang_name, output_dir, metric="spearman"):
@@ -106,13 +155,11 @@ def create_language_heatmap(df_lang, layer_name, lang_name, output_dir, metric="
     if df_lang.empty:
         return
     
-    # Get unique configs
     configs = sorted(set(df_lang['config1'].unique()) | set(df_lang['config2'].unique()))
     
     if len(configs) < 2:
         return
     
-    # Create matrix
     n = len(configs)
     matrix = np.ones((n, n))
     
@@ -126,10 +173,8 @@ def create_language_heatmap(df_lang, layer_name, lang_name, output_dir, metric="
             matrix[i, j] = val
             matrix[j, i] = val
     
-    # Create heatmap
     fig, ax = plt.subplots(figsize=(12, 10))
     
-    # Use mask for upper triangle
     mask = np.triu(np.ones_like(matrix, dtype=bool), k=1)
     
     sns.heatmap(matrix, 
@@ -155,195 +200,313 @@ def create_language_heatmap(df_lang, layer_name, lang_name, output_dir, metric="
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"    Saved heatmap to {plot_path}")
+    print(f"    Saved {metric} heatmap to {plot_path}")
 
-def create_language_boxplot(df_lang, layer_name, lang_name, output_dir):
-    """Create boxplots for all metrics for a specific language and layer."""
-    if df_lang.empty:
-        return
+def analyze_dimension_overlap(entries, dimension, output_dir, k=50):
+    """Analyze neuron overlap across a specific dimension (method, dataset, threshold, etc.)"""
+    print(f"\n=== Analyzing dimension: {dimension} ===")
     
-    metrics = ['spearman', 'kendall', 'precision@k', 'jaccard@k', 'rbo']
+    # Group entries by the dimension
+    dim_groups = defaultdict(list)
+    for config, path in entries:
+        if dimension in config:
+            dim_value = config[dimension]
+            dim_groups[dim_value].append((config, path))
     
-    fig, axes = plt.subplots(1, 5, figsize=(20, 4))
+    if len(dim_groups) < 2:
+        print(f"  Not enough values for dimension {dimension} to compare")
+        return None
     
+    # Prepare results storage
+    overlap_results = []
+    
+    # For each layer and language, compare across dimension values
+    layer_lang_groups = defaultdict(lambda: defaultdict(list))
+    for dim_value, dim_entries in dim_groups.items():
+        for config, path in dim_entries:
+            key = (config['layer'], config['lang'])
+            layer_lang_groups[key][dim_value].append((config, path))
+    
+    # Analyze each layer-language combination
+    for (layer, lang), dim_data in layer_lang_groups.items():
+        if len(dim_data) < 2:
+            continue
+            
+        print(f"\n  Layer: {layer}, Language: {lang}")
+        
+        # Load neuron lists for each dimension value
+        dim_lists = {}
+        for dim_value, entries in dim_data.items():
+            if entries:  # Take first entry if multiple
+                config, path = entries[0]
+                neuron_list = load_ranked_list(path)
+                dim_lists[dim_value] = neuron_list
+                print(f"    {dim_value}: {len(neuron_list)} neurons")
+        
+        # Compare all pairs
+        for (val1, list1), (val2, list2) in itertools.combinations(dim_lists.items(), 2):
+            comparison = compare_lists(list1, list2, k=k)
+            
+            result = {
+                'layer': layer,
+                'lang': lang,
+                'dimension': dimension,
+                f'{dimension}_1': val1,
+                f'{dimension}_2': val2,
+                **comparison
+            }
+            overlap_results.append(result)
+            
+            # Print key findings
+            print(f"    {val1} vs {val2}:")
+            print(f"      Jaccard@{k}: {comparison['jaccard@k']:.3f}")
+            print(f"      Precision@{k}: {comparison['precision@k']:.3f}")
+            print(f"      Common neurons: {comparison['n_common']}")
+    
+    if not overlap_results:
+        print(f"  No comparisons possible for dimension {dimension}")
+        return None
+    
+    # Create DataFrame and save results
+    df_results = pd.DataFrame(overlap_results)
+    
+    # Save to CSV
+    csv_path = output_dir / f"dimension_analysis_{dimension}.csv"
+    df_results.to_csv(csv_path, index=False)
+    print(f"\n  Saved dimension analysis to {csv_path}")
+    
+    # Create visualizations
+    create_dimension_plots(df_results, dimension, output_dir)
+    
+    return df_results
+
+def create_dimension_plots(df_results, dimension, output_dir):
+    """Create plots for dimension analysis."""
+    
+    # 1. Average overlap by dimension value
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    
+    metrics = ['jaccard@k', 'precision@k', 'rbo']
     for i, metric in enumerate(metrics):
-        data = df_lang[metric].dropna()
-        if len(data) > 0:
-            axes[i].boxplot(data)
-            axes[i].set_title(metric.capitalize())
-            axes[i].set_ylabel('Score')
-            axes[i].set_ylim([0, 1])
-            axes[i].grid(True, alpha=0.3)
-            
-            # Add mean line
-            mean_val = data.mean()
-            axes[i].axhline(y=mean_val, color='r', linestyle='--', alpha=0.5, label=f'Mean: {mean_val:.3f}')
-            axes[i].legend()
-    
-    plt.suptitle(f'Metric Distributions - {layer_name} - {lang_name}')
-    plt.tight_layout()
-    
-    plot_path = output_dir / f"{layer_name}_{lang_name}_metrics_boxplot.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    print(f"    Saved boxplot to {plot_path}")
-
-def create_language_pairwise_plot(df_lang, layer_name, lang_name, output_dir):
-    """Create a scatter plot matrix showing pairwise metric relationships."""
-    if df_lang.empty:
-        return
-    
-    metrics = ['spearman', 'kendall', 'precision@k', 'jaccard@k', 'rbo']
-    df_metrics = df_lang[metrics].dropna()
-    
-    if df_metrics.empty or len(df_metrics) < 2:
-        return
-    
-    # Create scatter plot matrix
-    fig, axes = plt.subplots(5, 5, figsize=(15, 15))
-    
-    for i, metric1 in enumerate(metrics):
-        for j, metric2 in enumerate(metrics):
-            ax = axes[i, j]
-            if i == j:
-                # Diagonal: histogram
-                ax.hist(df_metrics[metric1], bins=20, edgecolor='black', alpha=0.7)
-                if i == 0:
-                    ax.set_title(metric1.replace('@k', ''))
-            else:
-                # Off-diagonal: scatter plot
-                ax.scatter(df_metrics[metric2], df_metrics[metric1], alpha=0.6)
-                if not df_metrics[metric2].isna().all() and not df_metrics[metric1].isna().all():
-                    corr = df_metrics[metric2].corr(df_metrics[metric1])
-                    ax.text(0.05, 0.95, f'r={corr:.2f}', transform=ax.transAxes, 
-                           verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-            
-            # Labels
-            if j == 0:
-                ax.set_ylabel(metric1.replace('@k', ''))
-            if i == 4:
-                ax.set_xlabel(metric2.replace('@k', ''))
-            
+        ax = axes[i]
+        
+        # Calculate average metric for each dimension value
+        avg_by_val = []
+        dim_values = set(df_results[f'{dimension}_1'].unique()) | set(df_results[f'{dimension}_2'].unique())
+        
+        for val in dim_values:
+            mask = (df_results[f'{dimension}_1'] == val) | (df_results[f'{dimension}_2'] == val)
+            if mask.any():
+                avg_val = df_results.loc[mask, metric].mean()
+                avg_by_val.append({'value': val, 'avg': avg_val})
+        
+        if avg_by_val:
+            df_avg = pd.DataFrame(avg_by_val).sort_values('avg')
+            bars = ax.bar(range(len(df_avg)), df_avg['avg'])
+            ax.set_xticks(range(len(df_avg)))
+            ax.set_xticklabels(df_avg['value'], rotation=45, ha='right')
+            ax.set_title(f'Average {metric} by {dimension}')
+            ax.set_ylabel('Score')
+            ax.set_ylim([0, 1])
             ax.grid(True, alpha=0.3)
+            
+            # Add value labels
+            for j, bar in enumerate(bars):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height,
+                       f'{height:.2f}', ha='center', va='bottom', fontsize=8)
     
-    plt.suptitle(f'Metric Relationships - {layer_name} - {lang_name}')
+    plt.suptitle(f'Overlap Analysis by {dimension}')
     plt.tight_layout()
     
-    plot_path = output_dir / f"{layer_name}_{lang_name}_metric_relationships.png"
+    plot_path = output_dir / f"dimension_{dimension}_overview.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
+    print(f"  Saved dimension overview plot to {plot_path}")
     
-    print(f"    Saved metric relationships plot to {plot_path}")
+    # 2. Heatmap of pairwise overlaps
+    if len(df_results) > 0:
+        # Group by layer and create heatmaps
+        for layer in df_results['layer'].unique():
+            df_layer = df_results[df_results['layer'] == layer]
+            
+            fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+            
+            for i, metric in enumerate(['jaccard@k', 'precision@k']):
+                ax = axes[i]
+                
+                # Create pivot table for heatmap
+                dim_vals = sorted(set(df_layer[f'{dimension}_1'].unique()) | 
+                                 set(df_layer[f'{dimension}_2'].unique()))
+                
+                matrix = np.zeros((len(dim_vals), len(dim_vals)))
+                val_to_idx = {v: i for i, v in enumerate(dim_vals)}
+                
+                for _, row in df_layer.iterrows():
+                    i = val_to_idx[row[f'{dimension}_1']]
+                    j = val_to_idx[row[f'{dimension}_2']]
+                    matrix[i, j] = row[metric]
+                    matrix[j, i] = row[metric]
+                
+                np.fill_diagonal(matrix, 1.0)
+                
+                sns.heatmap(matrix, 
+                           annot=True, 
+                           fmt='.2f',
+                           cmap='RdYlBu_r',
+                           vmin=0, 
+                           vmax=1,
+                           xticklabels=dim_vals,
+                           yticklabels=dim_vals,
+                           ax=ax,
+                           cbar_kws={'label': metric})
+                
+                ax.set_title(f'{metric} - {layer}')
+                ax.set_xlabel(dimension)
+                ax.set_ylabel(dimension)
+            
+            plt.suptitle(f'Pairwise {dimension} Overlap - {layer}')
+            plt.tight_layout()
+            
+            plot_path = output_dir / f"dimension_{dimension}_{layer}_heatmap.png"
+            plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  Saved {layer} heatmap to {plot_path}")
 
-def create_config_comparison_bar(df_lang, layer_name, lang_name, output_dir):
-    """Create bar plot comparing average metrics across configs."""
-    if df_lang.empty:
-        return
+def analyze_neuron_intersection(entries, output_dir, k=50):
+    """Analyze which specific neurons appear across multiple configurations."""
+    print("\n=== Analyzing Neuron Intersections ===")
     
-    # Calculate average metrics for each config
-    configs = list(set(df_lang['config1'].unique()) | set(df_lang['config2'].unique()))
+    # Group by layer and language
+    layer_lang_groups = defaultdict(list)
+    for config, path in entries:
+        key = (config['layer'], config['lang'])
+        layer_lang_groups[key].append((config, path))
     
-    if len(configs) < 2:
-        return
+    intersection_results = []
     
-    config_metrics = []
-    for config in configs:
-        # Get all rows where this config appears
-        config_rows = df_lang[(df_lang['config1'] == config) | (df_lang['config2'] == config)]
-        if not config_rows.empty:
-            avg_metrics = config_rows[['spearman', 'kendall', 'precision@k', 'jaccard@k', 'rbo']].mean()
-            avg_metrics['config'] = config
-            config_metrics.append(avg_metrics)
+    for (layer, lang), group_entries in layer_lang_groups.items():
+        if len(group_entries) < 2:
+            continue
+            
+        print(f"\n  Layer: {layer}, Language: {lang}")
+        
+        # Load all neuron lists
+        config_neurons = {}
+        for config, path in group_entries:
+            neuron_list = load_ranked_list(path)[:k]  # Top-k only
+            config_str = f"{config['method']}-{config['dataset']}-{config['threshold']}-{config['shuffle']}"
+            config_neurons[config_str] = set(neuron_list)
+        
+        if len(config_neurons) < 2:
+            continue
+        
+        # Find core neurons (appear in all configs)
+        all_configs = list(config_neurons.keys())
+        core_neurons = set.intersection(*config_neurons.values())
+        
+        # Find neurons that appear in at least half of configs
+        neuron_counts = defaultdict(int)
+        for neurons in config_neurons.values():
+            for n in neurons:
+                neuron_counts[n] += 1
+        
+        half_threshold = len(config_neurons) / 2
+        frequent_neurons = {n for n, count in neuron_counts.items() if count >= half_threshold}
+        
+        result = {
+            'layer': layer,
+            'lang': lang,
+            'n_configs': len(config_neurons),
+            'n_core_neurons': len(core_neurons),
+            'n_frequent_neurons': len(frequent_neurons),
+            'core_neurons': list(core_neurons)[:20],  # Store first 20 for reference
+            'core_ratio': len(core_neurons) / k if k > 0 else 0,
+            'frequent_ratio': len(frequent_neurons) / k if k > 0 else 0
+        }
+        intersection_results.append(result)
+        
+        print(f"    Configs analyzed: {len(config_neurons)}")
+        print(f"    Core neurons (in all): {len(core_neurons)} ({result['core_ratio']:.1%})")
+        print(f"    Frequent neurons (≥50%): {len(frequent_neurons)} ({result['frequent_ratio']:.1%})")
+        
+        if core_neurons:
+            print(f"    Sample core neurons: {list(core_neurons)[:10]}")
     
-    if not config_metrics:
-        return
+    if intersection_results:
+        df_intersections = pd.DataFrame(intersection_results)
+        csv_path = output_dir / "neuron_intersections.csv"
+        df_intersections.to_csv(csv_path, index=False)
+        print(f"\n  Saved intersection analysis to {csv_path}")
+        
+        # Create visualization
+        create_intersection_plots(df_intersections, output_dir)
+        
+        return df_intersections
     
-    df_config_metrics = pd.DataFrame(config_metrics)
-    df_config_metrics = df_config_metrics.set_index('config')
+    return None
+
+def create_intersection_plots(df_intersections, output_dir):
+    """Create plots for neuron intersection analysis."""
     
-    # Create bar plot
-    fig, ax = plt.subplots(figsize=(14, 6))
-    df_config_metrics.plot(kind='bar', ax=ax)
-    ax.set_title(f'Average Metrics by Configuration - {layer_name} - {lang_name}')
-    ax.set_xlabel('Configuration')
-    ax.set_ylabel('Score')
-    ax.set_ylim([0, 1])
-    ax.legend(title='Metrics', bbox_to_anchor=(1.05, 1), loc='upper left')
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Plot 1: Core vs Frequent neurons by layer
+    ax = axes[0]
+    layers = df_intersections.groupby('layer').agg({
+        'core_ratio': 'mean',
+        'frequent_ratio': 'mean'
+    }).reset_index()
+    
+    x = np.arange(len(layers))
+    width = 0.35
+    
+    ax.bar(x - width/2, layers['core_ratio'], width, label='Core (100%)', color='darkblue')
+    ax.bar(x + width/2, layers['frequent_ratio'], width, label='Frequent (≥50%)', color='lightblue')
+    
+    ax.set_xlabel('Layer')
+    ax.set_ylabel('Ratio of Top-k Neurons')
+    ax.set_title('Neuron Consistency Across Configurations')
+    ax.set_xticks(x)
+    ax.set_xticklabels(layers['layer'], rotation=45, ha='right')
+    ax.legend()
     ax.grid(True, alpha=0.3)
-    plt.xticks(rotation=45, ha='right')
+    
+    # Plot 2: Distribution by language
+    ax = axes[1]
+    langs = df_intersections.groupby('lang').agg({
+        'core_ratio': 'mean',
+        'frequent_ratio': 'mean',
+        'n_configs': 'mean'
+    }).reset_index().sort_values('core_ratio', ascending=False)
+    
+    # Only plot top 10 languages for clarity
+    langs = langs.head(10)
+    
+    x = np.arange(len(langs))
+    ax.bar(x - width/2, langs['core_ratio'], width, label='Core', color='darkgreen')
+    ax.bar(x + width/2, langs['frequent_ratio'], width, label='Frequent', color='lightgreen')
+    
+    ax.set_xlabel('Language')
+    ax.set_ylabel('Ratio of Top-k Neurons')
+    ax.set_title('Top 10 Languages by Neuron Consistency')
+    ax.set_xticks(x)
+    ax.set_xticklabels(langs['lang'], rotation=45, ha='right')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
+    # Add config count as text
+    for i, (idx, row) in enumerate(langs.iterrows()):
+        ax.text(i, row['frequent_ratio'] + 0.02, f"n={row['n_configs']:.0f}", 
+               ha='center', fontsize=8)
+    
+    plt.suptitle('Neuron Intersection Analysis')
     plt.tight_layout()
     
-    plot_path = output_dir / f"{layer_name}_{lang_name}_config_comparison.png"
+    plot_path = output_dir / "neuron_intersections.png"
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close()
-    
-    print(f"    Saved config comparison to {plot_path}")
-
-def create_layer_summary_plot(layer_summaries, layer_name, output_dir):
-    """Create a summary plot comparing all languages for a layer."""
-    if not layer_summaries:
-        return
-    
-    df_summary = pd.DataFrame(layer_summaries)
-    
-    if df_summary.empty:
-        return
-    
-    # Create subplot for each metric
-    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    metrics = ['consistency_spearman', 'consistency_kendall', 'consistency_precision@k',
-              'consistency_jaccard@k', 'consistency_rbo']
-    
-    for i, metric in enumerate(metrics):
-        ax = axes[i // 3, i % 3]
-        
-        # Sort languages by metric value for better visualization
-        sorted_df = df_summary.sort_values(metric)
-        
-        bars = ax.bar(range(len(sorted_df)), sorted_df[metric])
-        ax.set_xticks(range(len(sorted_df)))
-        ax.set_xticklabels(sorted_df['lang'], rotation=45, ha='right')
-        ax.set_title(metric.replace('consistency_', '').replace('@k', '').capitalize())
-        ax.set_ylabel('Score')
-        ax.set_ylim([0, 1])
-        ax.grid(True, alpha=0.3)
-        
-        # Color bars by value
-        for j, bar in enumerate(bars):
-            val = sorted_df[metric].iloc[j]
-            if val >= 0.8:
-                bar.set_color('green')
-            elif val >= 0.6:
-                bar.set_color('yellow')
-            else:
-                bar.set_color('red')
-        
-        # Add value labels on bars
-        for j, bar in enumerate(bars):
-            height = bar.get_height()
-            ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{height:.2f}', ha='center', va='bottom', fontsize=8)
-    
-    # Add info box in the 6th subplot
-    ax = axes[1, 2]
-    ax.axis('off')
-    info_text = f"Layer: {layer_name}\n"
-    info_text += f"Total languages: {len(df_summary)}\n"
-    info_text += f"Total comparisons: {df_summary['n_comparisons'].sum()}\n"
-    info_text += f"Avg configs per language: {df_summary['n_configs'].mean():.1f}"
-    ax.text(0.5, 0.5, info_text, transform=ax.transAxes,
-           fontsize=12, ha='center', va='center',
-           bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-    
-    plt.suptitle(f'Language Consistency Summary - {layer_name}')
-    plt.tight_layout()
-    
-    plot_path = output_dir / f"{layer_name}_all_languages_summary.png"
-    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    plt.close()
-    
-    print(f"  Saved layer summary plot to {plot_path}")
+    print(f"  Saved intersection plots to {plot_path}")
 
 def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
     entries = collect_files(base_dir, include_words, exclude_words, layers)
@@ -362,11 +525,6 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
     
     print(f"Found {len(entries)} files after filtering")
     
-    # Group by layer
-    layer_groups = {}
-    for lang, layer, config, path in entries:
-        layer_groups.setdefault(layer, []).append((lang, config, path))
-    
     # Ensure output directories exist
     out_dir = Path("analysis")
     out_dir.mkdir(exist_ok=True)
@@ -377,7 +535,16 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
     layer_dir = out_dir / "by_layer"
     layer_dir.mkdir(exist_ok=True)
     
-    # Process each layer separately
+    dimension_dir = out_dir / "by_dimension"
+    dimension_dir.mkdir(exist_ok=True)
+    
+    # Group by layer
+    layer_groups = {}
+    for config, path in entries:
+        layer = config['layer']
+        layer_groups.setdefault(layer, []).append((config, path))
+    
+    # Process each layer
     all_summaries = []
     
     for layer, files in sorted(layer_groups.items()):
@@ -385,11 +552,12 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
         
         # Group by language within this layer
         lang_groups = {}
-        for lang, config, path in files:
-            lang_groups.setdefault(lang, []).append((config, path))
+        for config, path in files:
+            lang = config['lang']
+            config_str = f"{config['method']}/{config['dataset_config']}/{config['split']}"
+            lang_groups.setdefault(lang, []).append((config_str, path))
         
         layer_results = []
-        layer_summary = []
         
         # Create layer-specific plot directory
         layer_plots_dir = plots_dir / layer
@@ -399,7 +567,12 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
         for lang, lang_files in sorted(lang_groups.items()):
             print(f"  Processing language: {lang}")
             
-            lists = {cfg: load_ranked_list(path) for cfg, path in lang_files}
+            lists = {}
+            
+            # Load lists
+            for cfg, path in lang_files:
+                neuron_list = load_ranked_list(path)
+                lists[cfg] = neuron_list
             
             lang_results = []
             
@@ -411,7 +584,7 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
                     "layer": layer,
                     "config1": c1,
                     "config2": c2,
-                    **metrics
+                    **{k: v for k, v in metrics.items() if k not in ['common_neurons']}
                 }
                 layer_results.append(row)
                 lang_results.append(row)
@@ -424,139 +597,48 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
                 lang_plots_dir = layer_plots_dir / lang
                 lang_plots_dir.mkdir(exist_ok=True)
                 
-                # Generate language-specific plots
+                # Generate heatmaps including Jaccard
                 create_language_heatmap(df_lang, layer, lang, lang_plots_dir, 'spearman')
+                create_language_heatmap(df_lang, layer, lang, lang_plots_dir, 'jaccard@k')  # Added Jaccard heatmap
                 create_language_heatmap(df_lang, layer, lang, lang_plots_dir, 'precision@k')
                 create_language_heatmap(df_lang, layer, lang, lang_plots_dir, 'rbo')
-                create_language_boxplot(df_lang, layer, lang, lang_plots_dir)
-                create_language_pairwise_plot(df_lang, layer, lang, lang_plots_dir)
-                create_config_comparison_bar(df_lang, layer, lang, lang_plots_dir)
                 
                 # Save language-specific comparison CSV
                 lang_file = layer_dir / f"{layer}_{lang}_comparisons.csv"
                 df_lang.to_csv(lang_file, index=False)
                 print(f"    Saved {len(lang_results)} comparisons to {lang_file}")
-            
-            # Calculate summary for this language-layer combination
-            if len(lang_files) > 1 and lang_results:
-                df_ll = pd.DataFrame(lang_results)
-                summary_row = {
-                    "lang": lang,
-                    "layer": layer,
-                    "n_configs": len(lang_files),
-                    "n_comparisons": len(lang_results),
-                    "consistency_spearman": df_ll["spearman"].mean(),
-                    "consistency_kendall": df_ll["kendall"].mean(),
-                    "consistency_precision@k": df_ll["precision@k"].mean(),
-                    "consistency_jaccard@k": df_ll["jaccard@k"].mean(),
-                    "consistency_rbo": df_ll["rbo"].mean(),
-                    "std_spearman": df_ll["spearman"].std(),
-                    "std_kendall": df_ll["kendall"].std(),
-                    "std_precision@k": df_ll["precision@k"].std(),
-                    "std_jaccard@k": df_ll["jaccard@k"].std(),
-                    "std_rbo": df_ll["rbo"].std()
-                }
-                layer_summary.append(summary_row)
-                all_summaries.append(summary_row)
-        
-        # Save layer-specific results (all languages combined)
-        if layer_results:
-            df_layer = pd.DataFrame(layer_results)
-            layer_file = layer_dir / f"{layer}_all_comparisons.csv"
-            df_layer.to_csv(layer_file, index=False)
-            print(f"  Saved total {len(layer_results)} comparisons to {layer_file}")
-        
-        # Create layer summary plot comparing all languages
-        if layer_summary:
-            create_layer_summary_plot(layer_summary, layer, layer_plots_dir)
-            
-            # Save layer summary
-            df_layer_summary = pd.DataFrame(layer_summary)
-            summary_file = layer_dir / f"{layer}_summary.csv"
-            df_layer_summary.to_csv(summary_file, index=False)
-            print(f"  Saved summary to {summary_file}")
     
-    # Save overall summary
-    if all_summaries:
-        df_all_summary = pd.DataFrame(all_summaries)
-        df_all_summary.to_csv(out_dir / "all_layers_summary.csv", index=False)
-        print(f"\nSaved overall summary to {out_dir / 'all_layers_summary.csv'}")
-        
-        # Create cross-layer comparison plot
-        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-        metrics = ['consistency_spearman', 'consistency_kendall', 'consistency_precision@k', 
-                  'consistency_jaccard@k', 'consistency_rbo']
-        
-        for i, metric in enumerate(metrics):
-            ax = axes[i // 3, i % 3]
-            pivot = df_all_summary.pivot_table(index='layer', columns='lang', values=metric)
-            pivot.plot(kind='bar', ax=ax)
-            ax.set_title(metric.replace('consistency_', '').replace('@k', '').capitalize())
-            ax.set_xlabel('Layer')
-            ax.set_ylabel('Score')
-            ax.legend(title='Language')
-            ax.grid(True, alpha=0.3)
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha='right')
-        
-        # Remove the extra subplot
-        fig.delaxes(axes[1, 2])
-        
-        plt.suptitle('Consistency Metrics Across Layers and Languages')
-        plt.tight_layout()
-        
-        cross_layer_plot = plots_dir / "cross_layer_comparison.png"
-        plt.savefig(cross_layer_plot, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved cross-layer comparison plot to {cross_layer_plot}")
-        
-        # Create a heatmap showing all layers and languages
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
-        for i, metric in enumerate(['consistency_spearman', 'consistency_precision@k', 'consistency_rbo']):
-            ax = axes[i]
-            pivot = df_all_summary.pivot_table(index='layer', columns='lang', values=metric)
-            sns.heatmap(pivot, annot=True, fmt='.2f', cmap='RdYlBu_r', 
-                       vmin=0, vmax=1, ax=ax, cbar_kws={'label': 'Score'})
-            ax.set_title(metric.replace('consistency_', '').replace('@k', '').capitalize())
-            ax.set_xlabel('Language')
-            ax.set_ylabel('Layer')
-        
-        plt.suptitle('Consistency Heatmap Across Layers and Languages')
-        plt.tight_layout()
-        
-        heatmap_plot = plots_dir / "layer_language_heatmap.png"
-        plt.savefig(heatmap_plot, dpi=150, bbox_inches='tight')
-        plt.close()
-        print(f"Saved layer-language heatmap to {heatmap_plot}")
+    # Analyze different dimensions
+    dimensions_to_analyze = ['method', 'dataset', 'threshold', 'shuffle', 'lang_subset']
     
-    print("\nAnalysis complete!")
+    for dimension in dimensions_to_analyze:
+        df_dim = analyze_dimension_overlap(entries, dimension, dimension_dir, k=k)
     
-    # Print summary statistics
-    if all_summaries:
-        df = pd.DataFrame(all_summaries)
-        print("\nOverall Statistics:")
-        print(f"  Total layers analyzed: {df['layer'].nunique()}")
-        print(f"  Total languages analyzed: {df['lang'].nunique()}")
-        print(f"  Total comparisons: {df['n_comparisons'].sum()}")
-        print(f"  Average consistency (Spearman): {df['consistency_spearman'].mean():.3f}")
-        print(f"  Average consistency (Precision@k): {df['consistency_precision@k'].mean():.3f}")
-        print(f"  Average consistency (RBO): {df['consistency_rbo'].mean():.3f}")
+    # Analyze neuron intersections
+    analyze_neuron_intersection(entries, out_dir, k=k)
     
-    return df_all_summary if all_summaries else None
+    print("\n=== Analysis Summary ===")
+    print(f"Completed analysis for:")
+    print(f"  - {len(layer_groups)} layers")
+    print(f"  - {len(set(config['lang'] for config, _ in entries))} languages")
+    print(f"  - Dimension analyses: {', '.join(dimensions_to_analyze)}")
+    print(f"\nResults saved in {out_dir}")
+    
+    return True
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_dir", type=str, default="./identification", 
-                       help="Base directory containing identification/*/*/layer_x/<dataset>/<split>/*.csv files")
+                       help="Base directory containing identification files")
     parser.add_argument("--k", type=int, default=50, 
                        help="Top-k overlap size")
     parser.add_argument("--layers", nargs='+', default=None,
-                       help="Specific layers to process (e.g., --layers layer_0 layer_5 layer_10)")
+                       help="Specific layers to process")
     parser.add_argument("--include", type=str, nargs='+', default=["jw300", "europarl", "flores_plus"],
-                       help="Include configs containing any of these words (e.g., --include probe mlp)")
+                       help="Include configs containing any of these words")
     parser.add_argument("--exclude", type=str, nargs='+', default=["scratch"],
-                       help="Exclude configs containing any of these words (e.g., --exclude test debug)")
+                       help="Exclude configs containing any of these words")
     args = parser.parse_args()
 
     main(args.base_dir, k=args.k, include_words=args.include, exclude_words=args.exclude, layers=args.layers)
