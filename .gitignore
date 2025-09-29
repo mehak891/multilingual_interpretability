@@ -8,3 +8,5 @@ lang2vec_probing/results
 lang2vec_probing/features
 lang2vec_probing/visualizations/
 *.log
+romanization/dakshina_dataset_*
+log.txt

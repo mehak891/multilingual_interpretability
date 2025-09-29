@@ -13,6 +13,7 @@ from collections import defaultdict
 from data.multiloader import MultilingualDatasetManager
 from models import loader as m_loader
 from utils import config
+from tqdm import tqdm
 
 # -----------------------------
 # CLI
@@ -38,6 +39,8 @@ def get_args():
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--save-acts", action="store_true",
                         help="If set, save activations before probing")
+    parser.add_argument("--all-neurons", action="store_true",
+                        help="If set, run probing for all SAE neurons instead of just loaded ones")
     return parser.parse_args()
 
 # -----------------------------
@@ -86,7 +89,7 @@ def load_feature_csvs(langs, feature_names):
 # Collect activations for selected neurons
 # -----------------------------
 def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indices, 
-                        neuron_sources, split, batch_size, device):
+                        neuron_sources, split, batch_size, device, all_neurons=False):
     model.to(device)
     model.eval()
     print(langs)
@@ -99,34 +102,51 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
     
     for layer in layers:
         l = int(layer)
-        all_indices = set()  # Using set ensures uniqueness
-        for lang in langs:
-            if neuron_indices[l][lang]:
-                all_indices.update(neuron_indices[l][lang])
         
-        # Convert to sorted list for consistent ordering
-        union_indices[l] = sorted(list(all_indices))
-        
-        # Create mapping of neuron index to source languages for union
-        union_sources[l] = {}
-        for neuron_idx in union_indices[l]:
-            union_sources[l][neuron_idx] = neuron_sources[l][neuron_idx]
-        
-        # Verify uniqueness
-        assert len(union_indices[l]) == len(set(union_indices[l])), \
-            f"Duplicate neurons found in union for layer {l}"
-        
-        print(f"Layer {l}: Union of {len(union_indices[l])} unique neurons across languages")
-        
-        # Print distribution of neurons by source language count
-        source_counts = {}
-        for neuron_idx in union_indices[l]:
-            num_sources = len(union_sources[l][neuron_idx])
-            source_counts[num_sources] = source_counts.get(num_sources, 0) + 1
-        
-        print(f"  Neuron distribution by number of source languages:")
-        for num_sources in sorted(source_counts.keys()):
-            print(f"    {num_sources} language(s): {source_counts[num_sources]} neurons")
+        if all_neurons:
+            # Get the total number of neurons from the SAE for this layer
+            layer_name = f"layers.{l}.mlp"
+            if layer_name in saes:
+                sae = saes[layer_name]
+                total_neurons = sae.num_latents  # Assuming d_sae contains the total number of neurons
+                union_indices[l] = list(range(total_neurons))
+                # For all neurons, we don't track source languages (set to empty)
+                union_sources[l] = {i: [] for i in range(total_neurons)}
+                print(f"Layer {l}: Using all {total_neurons} SAE neurons")
+            else:
+                print(f"Warning: SAE not found for layer {l}, skipping")
+                union_indices[l] = []
+                union_sources[l] = {}
+        else:
+            # Original logic for selective neurons
+            all_indices = set()  # Using set ensures uniqueness
+            for lang in langs:
+                if neuron_indices[l][lang]:
+                    all_indices.update(neuron_indices[l][lang])
+            
+            # Convert to sorted list for consistent ordering
+            union_indices[l] = sorted(list(all_indices))
+            
+            # Create mapping of neuron index to source languages for union
+            union_sources[l] = {}
+            for neuron_idx in union_indices[l]:
+                union_sources[l][neuron_idx] = neuron_sources[l][neuron_idx]
+            
+            # Verify uniqueness
+            assert len(union_indices[l]) == len(set(union_indices[l])), \
+                f"Duplicate neurons found in union for layer {l}"
+            
+            print(f"Layer {l}: Union of {len(union_indices[l])} unique neurons across languages")
+            
+            # Print distribution of neurons by source language count
+            source_counts = {}
+            for neuron_idx in union_indices[l]:
+                num_sources = len(union_sources[l][neuron_idx])
+                source_counts[num_sources] = source_counts.get(num_sources, 0) + 1
+            
+            print(f"  Neuron distribution by number of source languages:")
+            for num_sources in sorted(source_counts.keys()):
+                print(f"    {num_sources} language(s): {source_counts[num_sources]} neurons")
 
     for lang in langs:
         dl = dataset_manager.create_dataloader(
@@ -175,7 +195,7 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
 # Run probes with source language tracking
 # -----------------------------
 def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
-                            langs, layers, out_dir):
+                            langs, layers, out_dir, all_neurons=False):
     os.makedirs(out_dir, exist_ok=True)
 
     for fset, feat_df in features.items():
@@ -202,10 +222,10 @@ def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features
             print(f"Activation matrix shape: {np.shape(X)}")
             print(f"Number of unique neurons: {len(neuron_ids)}")
             
-            for n_idx in range(X.shape[1]):
+            for n_idx in tqdm(range(X.shape[1])):
                 x = X[:, n_idx].reshape(-1, 1)
                 neuron_id = neuron_ids[n_idx]
-                source_langs = union_sources[l][neuron_id]  # Get source languages
+                source_langs = union_sources[l].get(neuron_id, [])  # Get source languages, default to empty list
                 
                 for f_idx in range(feat_subdf.shape[1]):
                     # Create unique key for this neuron-feature pair
@@ -232,7 +252,7 @@ def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features
                     results.append({
                         "layer": l,
                         "neuron_idx": neuron_id,
-                        "source_languages": ",".join(sorted(source_langs)),  # Store as comma-separated string
+                        "source_languages": ",".join(sorted(source_langs)) if source_langs else "",  # Store as comma-separated string, empty if no sources
                         "num_source_langs": len(source_langs),
                         "feature_set": fset,
                         "feature_name": feat_subdf.columns[f_idx],  # Include feature name
@@ -250,7 +270,9 @@ def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features
             # Remove duplicates, keeping the first occurrence
             df = df.drop_duplicates(subset=['layer', 'neuron_idx', 'feature_idx'], keep='first')
         
-        df.to_csv(os.path.join(out_dir, f"{fset}_probes_with_sources.csv"), index=False)
+        # Use different filename when using all neurons
+        filename = f"{fset}_probes_all_neurons.csv" if all_neurons else f"{fset}_probes_with_sources.csv"
+        df.to_csv(os.path.join(out_dir, filename), index=False)
         print(f"[INFO] Saved {len(df)} unique probe results with source info → {out_dir}")
 
 # -----------------------------
@@ -271,16 +293,21 @@ def main():
 
     dataset_manager = MultilingualDatasetManager(model_name=args.model_path)
 
-    # Load neuron indices with source tracking
-    neuron_indices, neuron_sources = load_neuron_indices_with_sources(
-        args.exp, args.model_name, args.method, args.layers, args.langs, args.split
-    )
+    # Load neuron indices with source tracking (only needed if not using all neurons)
+    if args.all_neurons:
+        print("[INFO] Using all SAE neurons for probing")
+        neuron_indices, neuron_sources = {}, {}
+    else:
+        print("[INFO] Using selective neurons from identification results")
+        neuron_indices, neuron_sources = load_neuron_indices_with_sources(
+            args.exp, args.model_name, args.method, args.layers, args.langs, args.split
+        )
 
     # Collect activations for union of neurons
     lang_to_acts, union_indices, union_sources = collect_activations(
         model, saes, dataset_manager,
         args.langs, args.layers, neuron_indices, neuron_sources,
-        args.split, args.batch_size, args.device
+        args.split, args.batch_size, args.device, args.all_neurons
     )
 
     # Optional save
@@ -299,7 +326,7 @@ def main():
     # Run probes with source tracking
     out_dir = f"lang2vec_probing/results/{args.exp}"
     run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
-                            args.langs, args.layers, out_dir)
+                            args.langs, args.layers, out_dir, args.all_neurons)
 
 if __name__ == "__main__":
     main()

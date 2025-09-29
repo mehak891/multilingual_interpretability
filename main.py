@@ -74,7 +74,7 @@ def main():
             data_loader = dataset_manager.create_dataloader(
                 args.dataset_name, lang, args.split,
                 batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers,
-                shuffle_words=getattr(args, 'shuffle_words', False), debug=args.debug
+                shuffle_words=getattr(args, 'shuffle_words', False), romanized=args.romanized, debug=args.debug
             )
             
             debug_logger(f"Dataloader created, type: {type(data_loader)}", args.debug)

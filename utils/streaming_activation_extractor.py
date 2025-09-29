@@ -39,19 +39,20 @@ class StreamingExtractor:
         stats = self.lang_to_stats[lang][layer_idx]
         B, T, H = sae_latents.shape
         print(f"[DEBUG] Batch size: {B}, Sequence length: {T}, Hidden dim: {H}")
-
+        # In update_stats(), add:
+        unique_values = torch.unique(sae_latents[sae_latents > 0])
+        print(f"[DEBUG] Unique positive activation values (first 10): {unique_values[:10]}")
         # Initialize on first batch
         if stats["over_zero_token"] is None:
             print(f"[DEBUG] Initializing stats tensors for {lang} layer {layer_idx}")
             stats["over_zero_token"] = torch.zeros(H, dtype=torch.long, device=self.device)
             stats["over_zero_example"] = torch.zeros(H, dtype=torch.long, device=self.device)
-            stats["over_zero_total"] = torch.zeros(H, dtype=torch.long, device=self.device)
+            stats["over_zero_total"] = torch.zeros(H, dtype=torch.float, device=self.device)
             stats["max_active_over_zero"] = torch.zeros(H, dtype=torch.float, device=self.device)
             stats["min_active_over_zero"] = torch.full((H,), float('inf'), dtype=torch.float, device=self.device)
             # Initialize magnitude tracking
             stats["activation_sum"] = torch.zeros(H, dtype=torch.float, device=self.device)
             stats["activation_squared_sum"] = torch.zeros(H, dtype=torch.float, device=self.device)
-
         # Compute statistics for this batch
         over_zero_mask = sae_latents > 0
         print(f"[DEBUG] over_zero_mask shape: {over_zero_mask.shape}")
@@ -90,19 +91,19 @@ class StreamingExtractor:
         
         # Min values (only for non-zero activations)
         feature_min = torch.full((H,), float('inf'), dtype=torch.float, device=self.device)
-        sae_flat = sae_latents.view(-1, H)
+        # sae_flat = sae_latents.view(-1, H)
         
-        nonzero_feature_count = 0
-        for h in range(H):
-            nonzero_values = sae_flat[:, h][sae_flat[:, h] > 0]
-            if len(nonzero_values) > 0:
-                feature_min[h] = nonzero_values.min().item()
-                nonzero_feature_count += 1
+        # nonzero_feature_count = 0
+        # for h in range(H):
+        #     nonzero_values = sae_flat[:, h][sae_flat[:, h] > 0]
+        #     if len(nonzero_values) > 0:
+        #         feature_min[h] = nonzero_values.min().item()
+        #         nonzero_feature_count += 1
         
-        print(f"[DEBUG] Features with nonzero values: {nonzero_feature_count}/{H}")
-        finite_mins = feature_min[feature_min != float('inf')]
-        if len(finite_mins) > 0:
-            print(f"[DEBUG] feature_min range (finite): {finite_mins.min().item():.6f} to {finite_mins.max().item():.6f}")
+        # print(f"[DEBUG] Features with nonzero values: {nonzero_feature_count}/{H}")
+        # finite_mins = feature_min[feature_min != float('inf')]
+        # if len(finite_mins) > 0:
+        #     print(f"[DEBUG] feature_min range (finite): {finite_mins.min().item():.6f} to {finite_mins.max().item():.6f}")
         
         # Update accumulated statistics
         old_examples = stats["num_examples"]
@@ -112,7 +113,9 @@ class StreamingExtractor:
         stats["num_tokens"] += B * T
         stats["over_zero_token"] += token_counts
         stats["over_zero_example"] += example_counts
-        stats["over_zero_total"] += token_counts  # This seems redundant with over_zero_token
+        # stats["over_zero_total"] += token_counts  # This seems redundant with over_zero_token
+        positive_activations = sae_latents * over_zero_mask.float()
+        stats["over_zero_total"] += positive_activations.sum(dim=(0, 1))
         stats["max_active_over_zero"] = torch.maximum(stats["max_active_over_zero"], feature_max)
         stats["min_active_over_zero"] = torch.minimum(stats["min_active_over_zero"], feature_min)
         # Update magnitude sums
@@ -165,7 +168,11 @@ class StreamingExtractor:
                     sae_output = sae_model.encode(hidden)
                     print(f"[DEBUG] SAE output type: {type(sae_output)}")
                     print(f"[DEBUG] SAE output attributes: {dir(sae_output)}")
-                    
+                    # In StreamingExtractor.run(), after sae_output = sae_model.encode(hidden):
+                    if hasattr(sae_output, 'feature_acts'):
+                        print(f"[DEBUG] feature_acts range: {sae_output.feature_acts.min():.6f} to {sae_output.feature_acts.max():.6f}")
+                    if hasattr(sae_output, 'post_acts'):
+                        print(f"[DEBUG] post_acts range: {sae_output.post_acts.min():.6f} to {sae_output.post_acts.max():.6f}")
                     sae_latents = sae_output.pre_acts
                     print(f"[DEBUG] sae_latents from pre_acts shape: {sae_latents.shape}")
 
