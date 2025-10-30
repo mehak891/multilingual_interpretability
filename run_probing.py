@@ -41,6 +41,9 @@ def get_args():
                         help="If set, save activations before probing")
     parser.add_argument("--all-neurons", action="store_true",
                         help="If set, run probing for all SAE neurons instead of just loaded ones")
+    parser.add_argument("--use-shared", action="store_true",
+                    help="If set, probe only neurons shared across multiple languages")
+
     return parser.parse_args()
 
 # -----------------------------
@@ -71,6 +74,31 @@ def load_neuron_indices_with_sources(exp, model_name, method, layers, langs, spl
     
     return indices, neuron_sources
 
+def load_shared_neuron_indices(exp, model_name, method, layers, split):
+    indices = {int(l): [] for l in layers}
+    neuron_sources = {int(l): {} for l in layers}
+
+    base_dir = f"identification/{os.path.basename(model_name)}/{method}"
+    for layer in layers:
+        l = int(layer)
+        csv_path = os.path.join(base_dir, f"layer_{layer}", exp, split, "shared_neurons.csv")
+        if not os.path.exists(csv_path):
+            print(f"[WARN] Missing shared neuron file: {csv_path}")
+            continue
+
+        df = pd.read_csv(csv_path)
+        neuron_list = df["feature_idx"].tolist()
+        indices[l] = neuron_list
+
+        for row in df.itertuples():
+            neuron_sources[l][row.feature_idx] = row.languages.split(",")
+
+        print(f"Layer {l}: Loaded {len(neuron_list)} shared neurons "
+              f"(avg num_languages={df['num_languages'].mean():.2f})")
+
+    return indices, neuron_sources
+
+
 # -----------------------------
 # Load Lang2Vec features from CSV
 # -----------------------------
@@ -89,7 +117,8 @@ def load_feature_csvs(langs, feature_names):
 # Collect activations for selected neurons
 # -----------------------------
 def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indices, 
-                        neuron_sources, split, batch_size, device, all_neurons=False):
+                        neuron_sources, split, batch_size, device, 
+                        all_neurons=False, use_shared=False):
     model.to(device)
     model.eval()
     print(langs)
@@ -104,41 +133,48 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
         l = int(layer)
         
         if all_neurons:
-            # Get the total number of neurons from the SAE for this layer
+            # Use all neurons from SAE
             layer_name = f"layers.{l}.mlp"
             if layer_name in saes:
                 sae = saes[layer_name]
-                total_neurons = sae.num_latents  # Assuming d_sae contains the total number of neurons
+                total_neurons = sae.num_latents
                 union_indices[l] = list(range(total_neurons))
-                # For all neurons, we don't track source languages (set to empty)
-                union_sources[l] = {i: [] for i in range(total_neurons)}
+                union_sources[l] = {i: [] for i in range(total_neurons)}  # no sources tracked
                 print(f"Layer {l}: Using all {total_neurons} SAE neurons")
             else:
-                print(f"Warning: SAE not found for layer {l}, skipping")
+                print(f"[WARN] SAE not found for layer {l}, skipping")
                 union_indices[l] = []
                 union_sources[l] = {}
+
+        elif use_shared:
+            # Shared neurons already come as a flat list
+            all_indices = set(neuron_indices[l])
+            union_indices[l] = sorted(list(all_indices))
+            
+            # Source langs come directly from shared CSV
+            union_sources[l] = {}
+            for neuron_idx in union_indices[l]:
+                union_sources[l][neuron_idx] = neuron_sources[l].get(neuron_idx, [])
+            
+            print(f"Layer {l}: Loaded {len(union_indices[l])} shared neurons")
+            print(f"  Example: neuron {union_indices[l][0]} → {union_sources[l][union_indices[l][0]]}")
+
         else:
-            # Original logic for selective neurons
-            all_indices = set()  # Using set ensures uniqueness
+            # Selective neurons from per-language identification
+            all_indices = set()
             for lang in langs:
                 if neuron_indices[l][lang]:
                     all_indices.update(neuron_indices[l][lang])
             
-            # Convert to sorted list for consistent ordering
             union_indices[l] = sorted(list(all_indices))
             
-            # Create mapping of neuron index to source languages for union
             union_sources[l] = {}
             for neuron_idx in union_indices[l]:
                 union_sources[l][neuron_idx] = neuron_sources[l][neuron_idx]
             
-            # Verify uniqueness
-            assert len(union_indices[l]) == len(set(union_indices[l])), \
-                f"Duplicate neurons found in union for layer {l}"
-            
             print(f"Layer {l}: Union of {len(union_indices[l])} unique neurons across languages")
             
-            # Print distribution of neurons by source language count
+            # Print distribution
             source_counts = {}
             for neuron_idx in union_indices[l]:
                 num_sources = len(union_sources[l][neuron_idx])
@@ -148,26 +184,26 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
             for num_sources in sorted(source_counts.keys()):
                 print(f"    {num_sources} language(s): {source_counts[num_sources]} neurons")
 
+    # ---- Collect activations ----
     for lang in langs:
         dl = dataset_manager.create_dataloader(
-            "jw300", lang, split,
+            "flores_plus", lang, split,
             batch_size=batch_size, shuffle=False
         )
         if dl is None:
-            print(f"Dataloader for {lang} is None")
+            print(f"[WARN] Dataloader for {lang} is None")
             continue
         
-        for i, (layer_name, sae) in enumerate(saes.items()):
+        for layer_name, sae in saes.items():
             l = int(layer_name.split(".")[1])
-            
-            if not union_indices[l]:
+            if not union_indices.get(l):
                 print(f"No neurons in union for layer {l}")
                 continue
                 
             sae = sae.to(device)
             collected = []
 
-            print(f"Collecting activations for {lang} | Layer {l} | Union indices: {len(union_indices[l])}")
+            print(f"Collecting activations for {lang} | Layer {l} | Union neurons: {len(union_indices[l])}")
 
             for batch in tqdm(dl, desc=f"{lang} | Layer {l}"):
                 input_ids = batch["input_ids"].to(device)
@@ -195,7 +231,7 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
 # Run probes with source language tracking
 # -----------------------------
 def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
-                            langs, layers, out_dir, all_neurons=False):
+                            langs, layers, out_dir, all_neurons=False, use_shared=False):
     os.makedirs(out_dir, exist_ok=True)
 
     for fset, feat_df in features.items():
@@ -270,9 +306,17 @@ def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features
             # Remove duplicates, keeping the first occurrence
             df = df.drop_duplicates(subset=['layer', 'neuron_idx', 'feature_idx'], keep='first')
         
-        # Use different filename when using all neurons
-        filename = f"{fset}_probes_all_neurons.csv" if all_neurons else f"{fset}_probes_with_sources.csv"
+        # Decide filename based on mode
+        if all_neurons:
+            filename = f"{fset}_probes_all_neurons.csv"
+        elif use_shared:
+            # when using shared neurons
+            filename = f"{fset}_probes_shared.csv"
+        else:
+            filename = f"{fset}_probes_with_sources.csv"
+
         df.to_csv(os.path.join(out_dir, filename), index=False)
+
         print(f"[INFO] Saved {len(df)} unique probe results with source info → {out_dir}")
 
 # -----------------------------
@@ -297,6 +341,11 @@ def main():
     if args.all_neurons:
         print("[INFO] Using all SAE neurons for probing")
         neuron_indices, neuron_sources = {}, {}
+    elif args.use_shared:
+        print("[INFO] Using only shared neurons across languages")
+        neuron_indices, neuron_sources = load_shared_neuron_indices(
+            args.exp, args.model_name, args.method, args.layers, args.split
+        )
     else:
         print("[INFO] Using selective neurons from identification results")
         neuron_indices, neuron_sources = load_neuron_indices_with_sources(
@@ -307,7 +356,7 @@ def main():
     lang_to_acts, union_indices, union_sources = collect_activations(
         model, saes, dataset_manager,
         args.langs, args.layers, neuron_indices, neuron_sources,
-        args.split, args.batch_size, args.device, args.all_neurons
+        args.split, args.batch_size, args.device, args.all_neurons, args.use_shared
     )
 
     # Optional save
@@ -324,9 +373,9 @@ def main():
     features = load_feature_csvs(args.langs, args.features)
 
     # Run probes with source tracking
-    out_dir = f"lang2vec_probing/results/{args.exp}"
+    out_dir = f"lang2vec_probing/results/{args.layers[0]}/{args.exp}"
     run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
-                            args.langs, args.layers, out_dir, args.all_neurons)
+                            args.langs, args.layers, out_dir, args.all_neurons, args.use_shared)
 
 if __name__ == "__main__":
     main()
