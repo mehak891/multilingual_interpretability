@@ -14,7 +14,6 @@ from data.multiloader import MultilingualDatasetManager
 from models import loader as m_loader
 from utils import config
 from tqdm import tqdm
-
 # -----------------------------
 # CLI
 # -----------------------------
@@ -137,7 +136,10 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
             layer_name = f"layers.{l}.mlp"
             if layer_name in saes:
                 sae = saes[layer_name]
-                total_neurons = sae.num_latents
+                if hasattr(sae,"num_latents"):
+                    total_neurons = sae.num_latents  # Assuming d_sae contains the total number of neurons
+                else:
+                    total_neurons = sae.cfg.d_sae
                 union_indices[l] = list(range(total_neurons))
                 union_sources[l] = {i: [] for i in range(total_neurons)}  # no sources tracked
                 print(f"Layer {l}: Using all {total_neurons} SAE neurons")
@@ -215,7 +217,10 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
                                     output_hidden_states=True)
                     hidden = outputs.hidden_states[int(l) + 1]  # (B,T,H)
                     sae_out = sae.encode(hidden)
-                    latents = sae_out.pre_acts  # (B,T,N)
+                    if hasattr(sae_out,'pre_acts'):
+                        latents = sae_out.pre_acts  # (B,T,N)
+                    else:
+                        latents = sae_out
 
                     selected = latents[:, :, union_indices[l]]  # (B,T,K)
                     collected.append(selected.mean(dim=(0, 1)).cpu())

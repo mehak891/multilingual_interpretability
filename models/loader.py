@@ -10,6 +10,7 @@ from transformers import (
     AutoModelForCausalLM
 )
 from sparsify import Sae
+from sae_lens import SAE
 
 class HFModelLoader:
     def __init__(self, 
@@ -72,8 +73,19 @@ class SAELoader:
 
     def load_sae(self):
         self.logger.info(f"Loading Sae model '{self.model_name}' for layers {self.layers}")
-        self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
-        #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
+        if 'llama' in self.model_name:
+            self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
+            #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
+        else:
+            for layer in self.layers:
+                layer = "layer_"+layer.split('.')[-2]
+                root_dir = f"{layer}/width_65k/canonical"
+                sae, cfg_dict, sparsity = SAE.from_pretrained(
+                    release=self.model_name,  # see other options in sae_lens/pretrained_saes.yaml
+                    sae_id=root_dir,  # won't always be a hook point
+                    device=self.device
+                    )
+                self.sae_model = {self.layers[0]: sae}
         self.logger.info(f"Successfully loaded Sae model on '{self.device}'")
 
     def get_sae(self):
