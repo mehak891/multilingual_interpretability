@@ -61,87 +61,99 @@ class MultilingualDatasetManager:
         if config['language_param_type'] != "parallel_subset":
             dataset_lang_code = self._get_dataset_language_code(dataset_name, common_lang)
         
-        try:
-            if config['language_param_type'] == 'flores_subset':
-                dataset = load_dataset(config['name'], "all", split=split)
-                import pandas as pd
-                df = pd.DataFrame({"sentence": list(dataset[f"sentence_{dataset_lang_code}"])})
-                dataset = HFDatasetType.from_pandas(df)
+        
+        if config['language_param_type'] == 'flores_subset':
+            dataset = load_dataset(config['name'], "all", split=split)
+            import pandas as pd
+            df = pd.DataFrame({"sentence": list(dataset[f"sentence_{dataset_lang_code}"])})
+            dataset = HFDatasetType.from_pandas(df)
 
-            elif config['language_param_type'] == 'flores_plus_subset':
-                dataset = load_dataset(config['name'], dataset_lang_code, split=split)
+        elif config['language_param_type'] == 'flores_plus_subset':
+            print(f"Loading dataset {dataset_lang_code} for {split} for flores_plus_subset")
+            # dataset = load_dataset(config['name'], dataset_lang_code)
+            ds = load_dataset(
+                config['name'],
+                dataset_lang_code,
+                split=split
+            )
 
-            elif config['language_param_type'] == 'filter':
-                dataset = load_dataset(config['name'], split=split)
-                if 'language' in dataset.column_names:
-                    dataset = dataset.filter(lambda x: x['language'] == dataset_lang_code)
-                elif 'lang' in dataset.column_names:
-                    dataset = dataset.filter(lambda x: x['lang'] == dataset_lang_code)
-                    
-            elif config['language_param_type'] == 'pair':
-                if common_lang == 'en':
-                    available_pairs = config.get('language_pairs', [])
-                    en_pairs = [pair for pair in available_pairs if pair.startswith('en-')]
-                    if en_pairs:
-                        dataset = load_dataset(config['name'], en_pairs[0], split=split)
-                    else:
-                        return None
-                else:
-                    pair = f"en-{common_lang}"
-                    if pair in config.get('language_pairs', []):
-                        dataset = load_dataset(config['name'], pair, split=split)
-                    else:
-                        return None
+            # Convert streaming → in-memory HF dataset
+            # (flores+ subsets ~2k rows → safe)
+            ds = list(ds)  # materialize
+            from datasets import Dataset
+            dataset = Dataset.from_list(ds)
 
-            elif config['language_param_type'] == 'parallel_subset':
-                # For datasets like JW300 / Europarl (subset = en-xx, split=train)
-                if common_lang == 'en':
-                    # Pick first non-English supported lang to construct a subset
-                    non_en = config['supported_languages'][1]
-                    subset_name = f"en-{non_en}"
-                    dataset = load_dataset(config['name'], subset_name, split=split)
-                    col = "english"
-                else:
-                    subset_name = f"en-{common_lang}"
-                    dataset = load_dataset(config['name'], subset_name, split=split)
-                    col = "non_english"
+        elif config['language_param_type'] == 'filter':
+            dataset = load_dataset(config['name'], split=split)
+            if 'language' in dataset.column_names:
+                dataset = dataset.filter(lambda x: x['language'] == dataset_lang_code)
+            elif 'lang' in dataset.column_names:
+                dataset = dataset.filter(lambda x: x['lang'] == dataset_lang_code)
                 
-                # Select up to 1K examples
-                dataset = dataset.select(range(min(1000, len(dataset))))
-
-                # Normalize into "sentence" column
-                import pandas as pd
-                df = pd.DataFrame({"sentence": list(dataset[col])})
-                dataset = HFDatasetType.from_pandas(df)
-
-            elif dataset_name == "dakshina":
-                base_dir = Path("./romanization/dakshina_dataset_v1.0")
-                file_path = base_dir / common_lang / "romanized" / f"{common_lang}.romanized.rejoined.tsv"
-                import pandas as pd
-                df = pd.read_csv(
-                    file_path,
-                    sep="\t",
-                    header=None,
-                    names=["native", "romanized"],
-                    engine="python",         # more forgiving than C parser
-                    quoting=3,               # ignore quotes
-                    on_bad_lines="skip"      # skip malformed rows
-                    )
-                print(df.head())
-                dataset = HFDatasetType.from_pandas(df)
-                # return dataset
-
+        elif config['language_param_type'] == 'pair':
+            if common_lang == 'en':
+                available_pairs = config.get('language_pairs', [])
+                en_pairs = [pair for pair in available_pairs if pair.startswith('en-')]
+                if en_pairs:
+                    dataset = load_dataset(config['name'], en_pairs[0], split=split)
+                else:
+                    return None
             else:
-                dataset = load_dataset(config['name'], split=split)
+                pair = f"en-{common_lang}"
+                if pair in config.get('language_pairs', []):
+                    dataset = load_dataset(config['name'], pair, split=split)
+                else:
+                    return None
 
+        elif config['language_param_type'] == 'parallel_subset':
+            # For datasets like JW300 / Europarl (subset = en-xx, split=train)
+            if common_lang == 'en':
+                # Pick first non-English supported lang to construct a subset
+                non_en = config['supported_languages'][1]
+                subset_name = f"en-{non_en}"
+                dataset = load_dataset(config['name'], subset_name, split=split)
+                col = "english"
+            else:
+                subset_name = f"en-{common_lang}"
+                dataset = load_dataset(config['name'], subset_name, split=split)
+                col = "non_english"
             
-                
-            return dataset
+            # Select up to 1K examples
+            dataset = dataset.select(range(min(1000, len(dataset))))
+
+            # Normalize into "sentence" column
+            import pandas as pd
+            df = pd.DataFrame({"sentence": list(dataset[col])})
+            dataset = HFDatasetType.from_pandas(df)
+
+        elif dataset_name == "dakshina":
+            base_dir = Path("./romanization/dakshina_dataset_v1.0")
+            file_path = base_dir / common_lang / "romanized" / f"{common_lang}.romanized.rejoined.tsv"
+            import pandas as pd
+            df = pd.read_csv(
+                file_path,
+                sep="\t",
+                header=None,
+                names=["native", "romanized"],
+                engine="python",         # more forgiving than C parser
+                quoting=3,               # ignore quotes
+                on_bad_lines="skip"      # skip malformed rows
+                )
+            print(df.head())
+            dataset = HFDatasetType.from_pandas(df)
+            # return dataset
+
+        else:
+            dataset = load_dataset(config['name'], split=split)
+
+        
             
-        except Exception as e:
-            if self.verbose:
-                print(f"[ERROR] Failed to load {dataset_name}-{common_lang}-{split}: {e}")
-            return None
+        return dataset
+            
+        # except Exception as e:
+        #     if self.verbose:
+        #         print(f"[ERROR] Failed to load {dataset_name}-{common_lang}-{split}: {e}")
+        #     return None
 
     def download_and_cache_dataset(self, 
                                  dataset_name: str, 
@@ -324,7 +336,12 @@ class TokenizedDataset(Dataset):
     
     def __getitem__(self, idx):
         text = self.hf_dataset[idx][self.text_field]
-        
+        # if idx < 3:
+        print(idx, text)
+        if text is None:
+            # fallback if dataset has 'sentence' instead
+            text = self.hf_dataset[idx].get("native", None)
+            print(text)
         if self.shuffle_words:
             if self.debug:
                 print("[DEBUG] Shuffling words to test word order significance.")

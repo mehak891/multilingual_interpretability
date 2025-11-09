@@ -129,21 +129,26 @@ def collect_files(base_dir, include_words=None, exclude_words=None, layers=None)
     entries = []
 
     for f in csv_files:
+        # print(f)
         config = parse_config_path(f)
         if not config:
+            # print(f"Excluding 1 {f}")
             continue
         
         # Apply layer filter
         if layers and config['layer'] not in layers:
+            # print(f"Excluding  2{f}")
             continue
         
         # Apply include/exclude filters
         config_str = f"{config['method']}/{config['dataset_config']}/{config['split']}"
         
         if include_words and not any(word in config_str for word in include_words):
+            # print(f"Excluding 3 {f}")
             continue
         
         if exclude_words and any(word in config_str for word in exclude_words):
+            # print(f"Excluding 4 {f}")
             continue
         
         entries.append((config, f))
@@ -508,7 +513,7 @@ def create_intersection_plots(df_intersections, output_dir):
     plt.close()
     print(f"  Saved intersection plots to {plot_path}")
 
-def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
+def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None, experiment_tag=None):
     entries = collect_files(base_dir, include_words, exclude_words, layers)
     
     if not entries:
@@ -527,7 +532,10 @@ def main(base_dir, k=50, include_words=None, exclude_words=None, layers=None):
     
     # Ensure output directories exist
     out_dir = Path("analysis")
-    out_dir.mkdir(exist_ok=True)
+    if experiment_tag:
+        out_dir = out_dir / experiment_tag
+        print(f"Using experiment tag: {experiment_tag} (results will be saved in {out_dir})")
+    out_dir.mkdir(parents=True, exist_ok=True)
     
     plots_dir = out_dir / "plots"
     plots_dir.mkdir(exist_ok=True)
@@ -631,14 +639,19 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--base_dir", type=str, default="./identification", 
                        help="Base directory containing identification files")
-    parser.add_argument("--k", type=int, default=50, 
+    parser.add_argument("--k", type=int, default=100, 
                        help="Top-k overlap size")
     parser.add_argument("--layers", nargs='+', default=None,
                        help="Specific layers to process")
-    parser.add_argument("--include", type=str, nargs='+', default=["jw300", "europarl", "flores_plus"],
+    parser.add_argument("--include", type=str, nargs='+', default=["jw300", "europarl", "flores_plus", "dakshina"],
                        help="Include configs containing any of these words")
     parser.add_argument("--exclude", type=str, nargs='+', default=["scratch"],
                        help="Exclude configs containing any of these words")
+    parser.add_argument("--experiment_tag", type=str, default=None,
+                       help="Optional experiment tag to create a subdirectory in analysis/")
+    
     args = parser.parse_args()
 
-    main(args.base_dir, k=args.k, include_words=args.include, exclude_words=args.exclude, layers=args.layers)
+    main(args.base_dir, k=args.k, include_words=args.include, 
+         exclude_words=args.exclude, layers=args.layers,
+         experiment_tag=args.experiment_tag)

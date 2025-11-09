@@ -119,13 +119,15 @@ def main():
             )
             method_name = "magnitude"
         else:  # Default to sae_lape
-            final_indices, features_info = extractor.compute_sae_lape(
+            final_indices, features_info, shared_features = extractor.compute_sae_lape(
                 topk_threshold_ratio=getattr(args, 'topk_threshold_ratio', 0.5),
                 example_rate=getattr(args, 'example_rate', 0.98),
                 top=getattr(args, 'top_k', 100),
                 lang_specific=getattr(args, 'lang_specific', True)
             )
             method_name = "sae_lape"
+
+            print(f"main: {shared_features}")
         
         # Check if results are empty
         if not final_indices or len(final_indices) == 0:
@@ -165,6 +167,7 @@ def main():
         save_sae_lape_features(
             final_indices=final_indices,
             features_info=features_info,
+            shared_features=shared_features,
             sorted_langs=sorted(extractor.lang_to_stats.keys()),
             model_name=args.model_name,
             layer_names=args.layers,  # Pass the actual layer names

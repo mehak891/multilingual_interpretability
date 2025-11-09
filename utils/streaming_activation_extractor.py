@@ -250,7 +250,7 @@ class StreamingExtractor:
         sorted_lang = sorted(self.lang_to_stats.keys())
         print(f"[DEBUG] Sorted languages: {sorted_lang}")
         
-        result = sae_lape(
+        final_indices, features_info, shared_features = sae_lape(
             num_examples=num_examples,
             num_tokens=num_tokens,
             over_zero_token=over_zero_token,
@@ -262,7 +262,7 @@ class StreamingExtractor:
             **kwargs
         )
         
-        return result
+        return final_indices, features_info, shared_features
 
     def compute_magnitude_ranking(self, top=100, top_per_layer=False, apply_filtering=False):
         """Call magnitude ranking function with collected data."""

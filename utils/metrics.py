@@ -684,6 +684,27 @@ def sae_lape(
         count = (feature_counts == i).sum().item()
         if count > 0:
             print(f"[DEBUG]   {count} features assigned to {i} languages")
+
+
+    # --- Collect shared features BEFORE modifying lang_mask ---
+    merged_coords = torch.stack([layer_indices, feature_indices], dim=1)
+    shared_features = []
+    for i in range(len(sorted_entropies)):
+        count = feature_counts[i].item()
+        print(count)
+        if count > 1:  # neuron shared across multiple languages
+            layer, feat = merged_coords[i].tolist()
+            langs = [sorted_lang[j] for j in range(num_langs) if lang_mask[j, i]]
+            shared_features.append({
+                # "layer": layer,
+                "feature_idx": feat,
+                "languages": langs,
+                "num_languages": len(langs),
+                "entropy": sorted_entropies[i].item()
+            })
+
+    # print(shared_features)
+
     
     if lang_specific:
         print(f"[DEBUG] Applying lang_specific filter...")
@@ -773,6 +794,26 @@ def sae_lape(
             print(f"[DEBUG] {lang} feature info: {len(coord_indices)} features stored")
         else:
             features_info[lang] = {"indices": [], "selected_probs": torch.tensor([]), "entropies": torch.tensor([])}
+
+    # # Collect shared features explicitly (fix: align with selected features)
+    # shared_features = []
+
+    # for i in range(len(sorted_entropies)):
+    #     count = feature_counts[i].item()
+    #     if count > 1:  # neuron active in >1 language
+    #         layer, feat = merged_coords[i].tolist()
+    #         langs = [sorted_lang[j] for j in range(num_langs) if lang_mask[j, i]]
+    #         shared_features.append({
+    #             "layer": layer,
+    #             "feature_idx": feat,
+    #             "languages": langs,
+    #             "num_languages": len(langs),
+    #             "entropy": sorted_entropies[i].item()
+    #         })
+
+    # print(f"[DEBUG] Found {len(shared_features)} shared features")
+
+    return final_indices, features_info, shared_features
 
     print(f"\n[DEBUG] sae_lape completed")
     total_features = sum(len(info["indices"]) for info in features_info.values())

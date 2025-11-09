@@ -6,6 +6,7 @@ from pathlib import Path
 def save_sae_lape_features(
     final_indices,
     features_info,
+    shared_features,
     sorted_langs,
     model_name,
     layer_names,
@@ -16,9 +17,13 @@ def save_sae_lape_features(
     top_k=100,
     experiment_tag=""
 ):
-    """Save SAE-LAPE results to CSV files with proper layer naming."""
+    """Save SAE-LAPE results to CSV files with proper layer naming.
+       Also store an extra CSV for shared neurons across languages.
+    """
     saved_files = []
-    
+    coord_lang_map = {}  # (layer, feat) -> [languages]
+    # print(shared_features)
+
     for lang_idx, lang in enumerate(sorted_langs):
         if lang_idx >= len(final_indices) or lang not in features_info:
             continue
@@ -46,18 +51,17 @@ def save_sae_lape_features(
             if len(layer_features) == 0:
                 continue
             
-            # Get the actual layer name from the layer_names list
             if layer_idx < len(layer_names):
                 layer_name = layer_names[layer_idx]
-                # Extract layer number from name like "layers.0.mlp" -> "0"
                 layer_num = layer_name.split('.')[1] if '.' in layer_name else str(layer_idx)
             else:
                 layer_num = str(layer_idx)
                 
-            # Extract data
             data = []
             for feat_idx in layer_features:
                 coord = (layer_idx, feat_idx.item())
+                
+                # Build normal CSV row
                 if coord in coord_to_data:
                     if method == "sae_lape":
                         entropy, prob = coord_to_data[coord]
@@ -73,10 +77,11 @@ def save_sae_lape_features(
                             'feature_idx': feat_idx.item(),
                             'avg_activation': avg_act
                         })
+                
+                # Track shared neurons
+                coord_lang_map.setdefault(coord, []).append(lang)
             
             if data:
-                # Create directory and save using actual layer number
-                # Include experiment_tag as suffix to dataset folder if provided
                 dataset_folder = f"{dataset}"
                 if experiment_tag:
                     dataset_folder += f"-{experiment_tag}"
@@ -87,5 +92,21 @@ def save_sae_lape_features(
                 csv_path = dir_path / f"{lang}.csv"
                 df.to_csv(csv_path, index=False)
                 saved_files.append(csv_path)
-    
+
+    # ----- NEW PART: Save shared neurons CSV -----
+    if method == "sae_lape" and shared_features:
+        print("save:", shared_features)
+        dataset_folder = f"{dataset}"
+        if experiment_tag:
+            dataset_folder += f"-{experiment_tag}"
+        dir_path = Path(base_dir) / model_name / method / f"layer_{layer_num}" / dataset_folder / split
+        dir_path.mkdir(parents=True, exist_ok=True)
+
+        df_shared = pd.DataFrame(shared_features)
+        df_shared["languages"] = df_shared["languages"].apply(lambda x: ",".join(x))
+        csv_path = dir_path / "shared_neurons.csv"
+        df_shared.to_csv(csv_path, index=False)
+        print(f"[INFO] Saved shared neurons CSV: {csv_path}")
+
+
     print(f"Saved {len(saved_files)} files to {base_dir}/{model_name}/{method}/")
