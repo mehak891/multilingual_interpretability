@@ -14,7 +14,6 @@ from data.multiloader import MultilingualDatasetManager
 from models import loader as m_loader
 from utils import config
 from tqdm import tqdm
-
 # -----------------------------
 # CLI
 # -----------------------------
@@ -43,6 +42,8 @@ def get_args():
                         help="If set, run probing for all SAE neurons instead of just loaded ones")
     parser.add_argument("--use-shared", action="store_true",
                     help="If set, probe only neurons shared across multiple languages")
+    parser.add_argument("--raw-model", action="store_true",
+                    help="If set, probe raw hidden states instead of SAE latents")
 
     return parser.parse_args()
 
@@ -118,7 +119,7 @@ def load_feature_csvs(langs, feature_names):
 # -----------------------------
 def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indices, 
                         neuron_sources, split, batch_size, device, 
-                        all_neurons=False, use_shared=False):
+                        all_neurons=False, use_shared=False, raw_model=False):
     model.to(device)
     model.eval()
     print(langs)
@@ -137,7 +138,10 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
             layer_name = f"layers.{l}.mlp"
             if layer_name in saes:
                 sae = saes[layer_name]
-                total_neurons = sae.num_latents
+                if hasattr(sae,"num_latents"):
+                    total_neurons = sae.num_latents  # Assuming d_sae contains the total number of neurons
+                else:
+                    total_neurons = sae.cfg.d_sae
                 union_indices[l] = list(range(total_neurons))
                 union_sources[l] = {i: [] for i in range(total_neurons)}  # no sources tracked
                 print(f"Layer {l}: Using all {total_neurons} SAE neurons")
@@ -199,8 +203,9 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
             if not union_indices.get(l):
                 print(f"No neurons in union for layer {l}")
                 continue
-                
-            sae = sae.to(device)
+
+            if not raw_model:
+                sae = sae.to(device)
             collected = []
 
             print(f"Collecting activations for {lang} | Layer {l} | Union neurons: {len(union_indices[l])}")
@@ -214,12 +219,19 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
                                     attention_mask=attention_mask,
                                     output_hidden_states=True)
                     hidden = outputs.hidden_states[int(l) + 1]  # (B,T,H)
-                    sae_out = sae.encode(hidden)
-                    latents = sae_out.pre_acts  # (B,T,N)
-
+                    if not raw_model:
+                        sae_out = sae.encode(hidden)
+                        if hasattr(sae_out,'pre_acts'):
+                            latents = sae_out.pre_acts  # (B,T,N)
+                        else:
+                            latents = sae_out
+                    else:
+                        latents = hidden
+                
                     selected = latents[:, :, union_indices[l]]  # (B,T,K)
                     collected.append(selected.mean(dim=(0, 1)).cpu())
-
+                    # else:
+                    #     collected.append(hidden[:, :, union_indices[l]].mean(dim=(0, 1)).cpu())
             if collected:
                 lang_to_acts[lang][l] = torch.stack(collected).mean(dim=0).numpy()
             sae.to("cpu")
@@ -232,92 +244,211 @@ def collect_activations(model, saes, dataset_manager, langs, layers, neuron_indi
 # -----------------------------
 def run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
                             langs, layers, out_dir, all_neurons=False, use_shared=False):
+    import torch
     os.makedirs(out_dir, exist_ok=True)
 
+    device = "cuda"  # hard-using GPU now
+
     for fset, feat_df in features.items():
+        print(fset)
         results = []
-        processed_neurons = set()  # Track processed neuron-feature pairs
 
         for l in layers:
             l = int(l)
-            lang_subset = [lang for lang in langs if l in lang_to_acts[lang].keys()]
+
+            # Only use languages that have activations for this layer
+            lang_subset = [lang for lang in langs if l in lang_to_acts[lang]]
             if len(lang_subset) < 2:
                 continue
-            
-            print(f"Processing layer {l} with languages: {lang_subset}")
-            
-            # Build matrix: langs × neurons (using union indices)
-            X = np.stack([lang_to_acts[lang][l] for lang in lang_subset], axis=0)  # (L, K)
-            neuron_ids = union_indices[l]  # These are already unique
-            feat_subdf = feat_df.loc[lang_subset]
-            
-            # Verify uniqueness of neuron IDs
-            assert len(neuron_ids) == len(set(neuron_ids)), \
-                f"Duplicate neurons found in union_indices for layer {l}"
-            
-            print(f"Activation matrix shape: {np.shape(X)}")
-            print(f"Number of unique neurons: {len(neuron_ids)}")
-            
-            for n_idx in tqdm(range(X.shape[1])):
-                x = X[:, n_idx].reshape(-1, 1)
-                neuron_id = neuron_ids[n_idx]
-                source_langs = union_sources[l].get(neuron_id, [])  # Get source languages, default to empty list
-                
-                for f_idx in range(feat_subdf.shape[1]):
-                    # Create unique key for this neuron-feature pair
-                    pair_key = (l, neuron_id, fset, f_idx)
-                    
-                    # Skip if already processed (shouldn't happen with proper union)
-                    if pair_key in processed_neurons:
-                        print(f"Warning: Skipping duplicate neuron-feature pair: {pair_key}")
+
+            print(f"\n[Layer {l}] Languages: {lang_subset}")
+
+            # Activation matrix: (L, K)
+            X = np.stack([lang_to_acts[lang][l] for lang in lang_subset], axis=0)
+            neuron_ids = union_indices[l]
+            feat_subdf = feat_df.loc[lang_subset]  # (L, F)
+
+            print(f" - Activations: {X.shape}  (langs × neurons)")
+            print(f" - Features:    {feat_subdf.shape}  (langs × feat_dims)")
+
+            # Move to GPU tensors
+            print("Moving to GPU tensors")
+            X_t = torch.tensor(X, dtype=torch.float32, device=device)               # (L,K)
+            Y_t = torch.tensor(feat_subdf.values, dtype=torch.float32, device=device)  # (L,F)
+
+            # Center (matches sklearn fit_intercept=True)
+            print("Centering")
+            X_c = X_t - X_t.mean(dim=0, keepdim=True)  # (L,K)
+            Y_c = Y_t - Y_t.mean(dim=0, keepdim=True)  # (L,F)
+
+            # β: (K,F)
+            print("Computing beta")
+            denom = (X_c ** 2).sum(dim=0).unsqueeze(1).clamp(min=1e-9)  # (K,1)
+            beta = (X_c.T @ Y_c) / denom  # (K,F)
+
+            # print("Computing R²")
+            # # R² per neuron-feature pair
+            # # predictions = X_c @ β → (L,F)
+            # # but we need per-neuron pair -> broadcast
+            # # r2_matrix: (K,F)
+            # # Y_pred = X_c @ beta  # (L,F)
+            # # ss_res = ((Y_c - Y_pred) ** 2).sum(dim=0)  # (F,)
+            # # ss_tot = (Y_c ** 2).sum(dim=0).clamp(min=1e-9)  # (F,)
+            # # r2_global = 1 - ss_res / ss_tot  # but this is feature-wise
+
+            # # # To get per-neuron-feature score:
+            # # # contribution of each neuron = β[k,f] * X_c[:,k]
+            # # # Compute per-neuron predictions directly
+            # # # shape: (L,K,F)
+            # # Y_pred_full = X_c.unsqueeze(2) * beta.unsqueeze(0)  # (*broadcast*)
+            # # # sum across tokens (languages):
+            # # # shape: (K,F)
+            # # ss_res_nf = (Y_c.unsqueeze(1) - Y_pred_full).pow(2).sum(dim=0)
+            # # r2_matrix = 1 - ss_res_nf / ss_tot  # (K,F)
+            # # r2_matrix = r2_matrix.detach().cpu().numpy()
+
+            # # --- OOM-SAFE CHUNKED R² COMPUTATION ---
+            # import math
+
+            # F = Y_c.shape[1]   # number of features
+            # K = X_c.shape[1]   # number of neurons
+
+            # chunk_size = 256   # change to 128 if memory is tight
+
+            # r2_matrix = torch.empty((K, F), device="cpu")  # final result on CPU
+
+            # for start in tqdm(range(0, F, chunk_size)):
+            #     end = min(start + chunk_size, F)
+
+            #     # slice feature subset
+            #     Y_c_chunk = Y_c[:, start:end]              # (L, f)
+            #     beta_chunk = beta[:, start:end]            # (K, f)
+
+            #     # (L,K,f) prediction contributions
+            #     Y_pred_chunk = X_c.unsqueeze(2) * beta_chunk.unsqueeze(0)
+
+            #     # (K,f): sum across languages
+            #     ss_res_chunk = (Y_c_chunk.unsqueeze(1) - Y_pred_chunk).pow(2).sum(dim=0)
+
+            #     # (f,)
+            #     ss_tot_chunk = (Y_c_chunk ** 2).sum(dim=0).clamp(min=1e-9)
+
+            #     r2_chunk = 1 - ss_res_chunk / ss_tot_chunk  # (K,f)
+
+            #     # move result to CPU (safe for large layers)
+            #     r2_matrix[:, start:end] = r2_chunk.detach().cpu()
+
+            #     torch.cuda.empty_cache()
+
+            # # now r2_matrix matches previous code output exactly
+            # print("Converting to numpy")
+            # r2_matrix = r2_matrix.numpy()
+            # print("Sample r2_matrix: ", r2_matrix[:5, :5])
+
+            # # Store results
+            # print("Storing results")
+            # print(len(neuron_ids))
+            # for ni, neuron_id in tqdm(enumerate(neuron_ids)):
+            #     source_langs = union_sources[l].get(neuron_id, [])
+            #     # print(f"{len(feat_subdf.columns)} features")
+            #     for fi, feat_name in (enumerate(feat_subdf.columns)):
+            #         score = float(r2_matrix[ni, fi])
+            #         if np.isnan(score):
+            #             continue
+            #         results.append({
+            #             "layer": l,
+            #             "neuron_idx": neuron_id,
+            #             "source_languages": ",".join(sorted(source_langs)),
+            #             "num_source_langs": len(source_langs),
+            #             "feature_set": fset,
+            #             "feature_name": feat_name,
+            #             "feature_idx": fi,
+            #             "r2_score": score
+            #         })
+
+            # print(f" → Completed layer {l}: stored {len(neuron_ids)*feat_subdf.shape[1]} probe scores")
+
+        # df = pd.DataFrame(results)
+
+        # if all_neurons:
+        #     filename = f"{fset}_probes_all_neurons.csv"
+        # elif use_shared:
+        #     filename = f"{fset}_probes_shared.csv"
+        # else:
+        #     filename = f"{fset}_probes_with_sources.csv"
+
+        # df.to_csv(os.path.join(out_dir, filename), index=False)
+        # print(f"[SAVED] {len(df)} rows → {os.path.join(out_dir, filename)}")
+
+            print("Computing R² (GPU, low memory)")
+
+            # --- GPU R² WITHOUT BROADCAST (VERY IMPORTANT) ---
+            # Precompute sums
+            x2 = (X_c ** 2).sum(dim=0, keepdim=True)         # (1,K)
+            y2 = (Y_c ** 2).sum(dim=0, keepdim=True)         # (1,F)
+            xy = X_c.T @ Y_c                                 # (K,F)
+
+            # ss_res: (K,F)
+            ss_res = y2 - 2 * beta * xy + (beta * beta) * x2.T
+            r2_matrix = 1 - ss_res / y2.clamp(min=1e-9)      # (K,F)
+
+            # Keep on GPU, move only what we stream
+            r2_matrix = r2_matrix
+
+            print("Streaming write to CSV (no in-memory results)")
+
+            # Setup output file
+            if all_neurons:
+                filename = f"{fset}_probes_all_neurons.csv"
+            elif use_shared:
+                filename = f"{fset}_probes_shared.csv"
+            else:
+                filename = f"{fset}_probes_with_sources.csv"
+
+            out_path = os.path.join(out_dir, filename)
+
+            # Write header once
+            if not os.path.exists(out_path):
+                with open(out_path, "w") as f:
+                    f.write("layer,neuron_idx,source_languages,num_source_langs,feature_set,feature_name,feature_idx,r2_score\n")
+
+            # STREAM rows in chunks of 100,000
+            CHUNK = 2000000
+            buffer = []
+            written = 0
+
+            feat_names = list(feat_subdf.columns)
+
+            for ni, neuron_id in tqdm(enumerate(neuron_ids), total=len(neuron_ids), desc="Writing results"):
+                source_langs = union_sources[l].get(neuron_id, [])
+                num_src = len(source_langs)
+                src_str = ",".join(sorted(source_langs))
+
+                # pull one neuron row to CPU when needed
+                row = r2_matrix[ni].detach().cpu().numpy()
+
+                for fi, feat_name in enumerate(feat_names):
+                    score = float(row[fi])
+                    if np.isnan(score):
                         continue
-                    
-                    processed_neurons.add(pair_key)
-                    
-                    y = feat_subdf.iloc[:, f_idx].values
-                    if np.allclose(y, y[0]):
-                        continue
-                    try:
-                        clf = LinearRegression()
-                        clf.fit(x, y)
-                        y_pred = clf.predict(x)
-                        score = r2_score(y, y_pred)
-                    except Exception:
-                        score = float("nan")
 
-                    results.append({
-                        "layer": l,
-                        "neuron_idx": neuron_id,
-                        "source_languages": ",".join(sorted(source_langs)) if source_langs else "",  # Store as comma-separated string, empty if no sources
-                        "num_source_langs": len(source_langs),
-                        "feature_set": fset,
-                        "feature_name": feat_subdf.columns[f_idx],  # Include feature name
-                        "feature_idx": f_idx,
-                        "r2_score": score
-                    })
-            
-            print(f"  Processed {len(set(neuron_ids))} unique neurons for {feat_subdf.shape[1]} features")
+                    buffer.append(f"{l},{neuron_id},{src_str},{num_src},{fset},{feat_name},{fi},{score}\n")
 
-        # Check for duplicates in results
-        df = pd.DataFrame(results)
-        duplicates = df.duplicated(subset=['layer', 'neuron_idx', 'feature_idx'], keep=False)
-        if duplicates.any():
-            print(f"Warning: Found {duplicates.sum()} duplicate entries in results!")
-            # Remove duplicates, keeping the first occurrence
-            df = df.drop_duplicates(subset=['layer', 'neuron_idx', 'feature_idx'], keep='first')
-        
-        # Decide filename based on mode
-        if all_neurons:
-            filename = f"{fset}_probes_all_neurons.csv"
-        elif use_shared:
-            # when using shared neurons
-            filename = f"{fset}_probes_shared.csv"
-        else:
-            filename = f"{fset}_probes_with_sources.csv"
+                    # if buffer is large → flush to disk
+                    if len(buffer) >= CHUNK:
+                        with open(out_path, "a") as f:
+                            f.writelines(buffer)
+                        written += len(buffer)
+                        buffer = []
+                        print(f"  [FLUSH] wrote {written:,} rows so far")
 
-        df.to_csv(os.path.join(out_dir, filename), index=False)
+            # final flush
+            if buffer:
+                with open(out_path, "a") as f:
+                    f.writelines(buffer)
+                written += len(buffer)
 
-        print(f"[INFO] Saved {len(df)} unique probe results with source info → {out_dir}")
+        print(f" → Finished layer {l}, total rows written: {written:,}")
 
 # -----------------------------
 # Main function
@@ -332,13 +463,23 @@ def main():
     # Load model + SAE
     model_loader = m_loader.HFModelLoader(args.model_path, "llm", args.device, logger)
     model = model_loader.model
-    sae_loader = m_loader.SAELoader(args.sae_model, args.layer_names, args.device, logger)
-    saes = sae_loader.sae_model
+
+    if not args.raw_model:
+        sae_loader = m_loader.SAELoader(args.sae_model, args.layer_names, args.device, logger)
+        saes = sae_loader.sae_model
 
     dataset_manager = MultilingualDatasetManager(model_name=args.model_path)
 
     # Load neuron indices with source tracking (only needed if not using all neurons)
-    if args.all_neurons:
+    if args.raw_model:
+        print("[INFO] Running probing on raw model activations (no SAE)")
+        saes = {}              # do not load SAE
+        neuron_indices = {int(l): {lang: list(range(model.config.hidden_size))
+                                for lang in args.langs}
+                        for l in args.layers}
+        neuron_sources = {int(l): {i: [] for i in range(model.config.hidden_size)}
+                        for l in args.layers}
+    elif args.all_neurons:
         print("[INFO] Using all SAE neurons for probing")
         neuron_indices, neuron_sources = {}, {}
     elif args.use_shared:
@@ -356,7 +497,8 @@ def main():
     lang_to_acts, union_indices, union_sources = collect_activations(
         model, saes, dataset_manager,
         args.langs, args.layers, neuron_indices, neuron_sources,
-        args.split, args.batch_size, args.device, args.all_neurons, args.use_shared
+        args.split, args.batch_size, args.device, args.all_neurons, args.use_shared,
+        args.raw_model
     )
 
     # Optional save
@@ -373,7 +515,17 @@ def main():
     features = load_feature_csvs(args.langs, args.features)
 
     # Run probes with source tracking
-    out_dir = f"lang2vec_probing/results/{args.layers[0]}/{args.exp}"
+    if "llama" in args.model_path.lower():
+        if args.raw_model:
+            out_dir = f"lang2vec_probing/results_raw/{args.layers[0]}/{args.exp}"
+        else:
+            out_dir = f"lang2vec_probing/results/{args.layers[0]}/{args.exp}"
+    else:
+        if args.raw_model:
+            out_dir = f"lang2vec_probing/gemma_results_new_raw/{args.layers[0]}/{args.exp}"
+        else:
+            out_dir = f"lang2vec_probing/gemma_results_new/{args.layers[0]}/{args.exp}"
+    
     run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
                             args.langs, args.layers, out_dir, args.all_neurons, args.use_shared)
 

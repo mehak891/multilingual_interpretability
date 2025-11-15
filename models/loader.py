@@ -10,6 +10,7 @@ from transformers import (
     AutoModelForCausalLM
 )
 from sparsify import Sae
+from sae_lens import SAE
 
 class HFModelLoader:
     def __init__(self, 
@@ -24,23 +25,37 @@ class HFModelLoader:
         self.model = None
         self.tokenizer = None
         self.load_model_and_tokenizer()
-    
+
     def load_model_and_tokenizer(self):
         self.logger.info(f"Loading model '{self.model_name}' of type '{self.model_type}'")
+
+        is_local = self.model_name.startswith("/") or self.model_name.startswith("./")
+
         try:
-            # Load the correct model type
+            load_kwargs = {
+                "local_files_only": is_local,
+                "trust_remote_code": True,
+            }
+
             if self.model_type == "mlm":
-                self.model = AutoModelForMaskedLM.from_pretrained(self.model_name)
+                self.model = AutoModelForMaskedLM.from_pretrained(self.model_name, **load_kwargs)
             elif self.model_type == "classification":
-                self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+                self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name, **load_kwargs)
             elif self.model_type == "seq2seq":
-                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
-            else:  # Default: base model (no head)
-                self.model = AutoModelForCausalLM.from_pretrained(self.model_name, output_hidden_states=True)
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name, **load_kwargs)
+            else:  # Default: causal LM
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    output_hidden_states=True,
+                    device_map="auto",     # auto load across available GPUs
+                    torch_dtype="auto",    # correct dtype for Gemma
+                    **load_kwargs
+                )
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, **load_kwargs)
 
-            self.model.to(self.device)
+            if self.device != "cpu":
+                self.model.to(self.device)
             self.model.eval()
 
             self.logger.info(f"Successfully loaded model on '{self.device}'")
@@ -48,6 +63,7 @@ class HFModelLoader:
         except Exception as e:
             self.logger.error(f"Error loading model '{self.model_name}': {e}")
             raise
+
 
     def get_model(self):
         return self.model
@@ -72,8 +88,21 @@ class SAELoader:
 
     def load_sae(self):
         self.logger.info(f"Loading Sae model '{self.model_name}' for layers {self.layers}")
-        self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
+        # self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
         #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
+        if 'llama' in self.model_name.lower():
+            self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
+            #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
+        else:
+            for layer in self.layers:
+                layer = "layer_"+layer.split('.')[-2]
+                root_dir = f"{layer}/width_65k/canonical"
+                sae, cfg_dict, sparsity = SAE.from_pretrained(
+                    release=self.model_name,  # see other options in sae_lens/pretrained_saes.yaml
+                    sae_id=root_dir,  # won't always be a hook point
+                    device=self.device
+                    )
+                self.sae_model = {self.layers[0]: sae}
         self.logger.info(f"Successfully loaded Sae model on '{self.device}'")
 
     def get_sae(self):

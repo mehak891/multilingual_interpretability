@@ -337,11 +337,11 @@ class TokenizedDataset(Dataset):
     def __getitem__(self, idx):
         text = self.hf_dataset[idx][self.text_field]
         # if idx < 3:
-        print(idx, text)
+        # print(idx, text)
         if text is None:
             # fallback if dataset has 'sentence' instead
             text = self.hf_dataset[idx].get("native", None)
-            print(text)
+            # print(text)
         if self.shuffle_words:
             if self.debug:
                 print("[DEBUG] Shuffling words to test word order significance.")

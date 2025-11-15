@@ -1,117 +1,92 @@
-# data/loader.py
+# models/loader.py
 
-from torch.utils.data import Dataset, DataLoader
-from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from typing import Optional, Union, List
-from transformers import DataCollatorWithPadding
+import torch
+from transformers import (
+    AutoModel,
+    AutoModelForMaskedLM,
+    AutoModelForSequenceClassification,
+    AutoModelForSeq2SeqLM,
+    AutoTokenizer,
+    AutoModelForCausalLM
+)
+from sparsify import Sae
+from sae_lens import SAE
 
-class HFDataset(Dataset):
-    def __init__(self,dataset_name: str,
-                 model_name: str,
-                 text_field: str,
-                 split: str,
-                 language: str,
-                 subset: str,
-                 max_length: int, logger):
-        self.dataset_name = dataset_name
-        self.split = split
-        self.logger = logger
-        self.language = language
-        self.subset = subset
-        try:
-            if self.language:
-                self.dataset = load_dataset(self.dataset_name,language=self.language,split=self.split)
-            elif self.subset:
-                self.dataset = load_dataset(self.dataset_name,name=self.subset,split=self.split)
-            else:
-                self.dataset = load_dataset(self.dataset_name,split=self.split)
-        except Exception as e:
-            self.logger.error(f"Failed to load dataset: {e}")
-            raise e
-        self.logger.info(f"Loading dataset '{self.dataset_name}' for language '{self.language}' split='{self.split}'")
-        self.text_field = text_field
-        self.max_length = max_length
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenized_dataset = self.dataset.map(self.tokenize_fn, remove_columns=self.dataset.column_names)
-    
-    def __len__(self):
-        return len(self.dataset)
-
-    def tokenize_fn(self,item):
-        return self.tokenizer(
-            item[f"{self.text_field}"],
-            truncation=True,
-            padding="max_length",
-            max_length=128
-        )
-
-    def __getitem__(self,idx):
-        text = self.dataset[idx][self.text_field]
-        encoded = self.tokenizer(text=text,truncation=True,padding='max_length',
-                    max_length=self.max_length,return_tensors='pt')
-        return {k:v.squeeze(0) for k,v in encoded.items()}
-
-
-class HFDatasetLoader:
-    def __init__(self,model_name: str,
-                 dataset_name: str,
-                 text_field: str,
-                 split: str,
-                 language: str,
-                 subset: str,
-                 batch_size: int,
-                 max_length: int,
-                 num_workers: int, logger):
-        self.dataset_name = dataset_name
-        self.split = split
-        self.language = language
-        self.text_field = text_field
-        self.max_length = max_length
+class HFModelLoader:
+    def __init__(self, 
+        model_name: str,
+        model_type: str = "llm",
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        logger = None):
         self.model_name = model_name
-        self.batch_size = batch_size
-        self.num_workers = num_workers
-        self.subset = subset
+        self.model_type = model_type
+        self.device = device
         self.logger = logger
-        self.dataset = None
-        self.dataset_obj = None
-        self.collator = None
-        self.get_dataloader()
-        
+        self.model = None
+        self.tokenizer = None
+        self.load_model_and_tokenizer()
+    
+    def load_model_and_tokenizer(self):
+        self.logger.info(f"Loading model '{self.model_name}' of type '{self.model_type}'")
+        try:
+            # Load the correct model type
+            if self.model_type == "mlm":
+                self.model = AutoModelForMaskedLM.from_pretrained(self.model_name)
+            elif self.model_type == "classification":
+                self.model = AutoModelForSequenceClassification.from_pretrained(self.model_name)
+            elif self.model_type == "seq2seq":
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(self.model_name)
+            else:  # Default: base model (no head)
+                self.model = AutoModelForCausalLM.from_pretrained(self.model_name, output_hidden_states=True)
 
-    def get_tokenizer(self,):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        def tokenize_fn(example):
-            return tokenizer(
-                example["text"],
-                truncation=True,
-                padding="max_length",
-                max_length=128
-            )
-        tokenizer.pad_token = tokenizer.eos_token
-        # Tokenize and clean up dataset
-        tokenized_dataset = dataset.map(tokenize_fn, remove_columns=dataset.column_names)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
 
-    def get_dataloader(self, shuffle:bool=False):
-        self.logger.info(f"Loading dataset {self.dataset_name} for {self.language} for split {self.split}.")
-        self.dataset_obj = HFDataset(
-            dataset_name=self.dataset_name,
-            model_name = self.model_name,
-            text_field=self.text_field,
-            split=self.split,
-            language=self.language,
-            subset = self.subset,
-            max_length=self.max_length,
-            logger=self.logger
-        )
-        self.collator = DataCollatorWithPadding(self.dataset_obj.tokenizer)
-        self.dataset = self.dataset_obj.tokenized_dataset
-        self.logger.info("Creating DataLoader...")
-        self.dataloader = DataLoader(self.dataset,
-                          batch_size=self.batch_size,
-                          shuffle=shuffle,
-                          num_workers=self.num_workers,collate_fn=self.collator)
+            self.model.to(self.device)
+            self.model.eval()
 
+            self.logger.info(f"Successfully loaded model on '{self.device}'")
 
+        except Exception as e:
+            self.logger.error(f"Error loading model '{self.model_name}': {e}")
+            raise
 
+    def get_model(self):
+        return self.model
+
+    def get_tokenizer(self):
+        return self.tokenizer
+
+    def summary(self):
+        self.logger.info(f"Model: {self.model_name}")
+        self.logger.info(f"Type: {self.model_type}")
+        self.logger.info(f"Device: {self.device}")
+        self.logger.info(f"Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+
+class SAELoader:
+    def __init__(self, model_name: str, layers: list[str], device: str = "cuda" if torch.cuda.is_available() else "cpu",logger = None):
+        self.model_name = model_name
+        self.device = device
+        self.sae_model = None
+        self.logger = logger
+        self.layers = layers
+        self.load_sae()
+
+    def load_sae(self):
+        self.logger.info(f"Loading Sae model '{self.model_name}' for layers {self.layers}")
+        if 'llama' in self.model_name:
+            self.sae_model = Sae.load_many(self.model_name, layers=self.layers, local=(self.model_name.startswith("/home/models/")))
+            #self.sae_model = Sae.load_from_hub(self.model_name, hookpoint="layers.10")
+        else:
+            for layer in self.layers:
+                layer = "layer_"+layer.split('.')[-2]
+                root_dir = f"{layer}/width_65k/canonical"
+                sae, cfg_dict, sparsity = SAE.from_pretrained(
+                    release=self.model_name,  # see other options in sae_lens/pretrained_saes.yaml
+                    sae_id=root_dir,  # won't always be a hook point
+                    device=self.device
+                    )
+                self.sae_model = {self.layers[0]: sae}
+        self.logger.info(f"Successfully loaded Sae model on '{self.device}'")
+
+    def get_sae(self):
+        return self.sae_model
