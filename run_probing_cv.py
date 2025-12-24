@@ -708,14 +708,14 @@ def main():
     # Run probes with source tracking
     if "llama" in args.model_path.lower():
         if args.raw_model:
-            out_dir = f"lang2vec_probing/results_raw/{args.layers[0]}/{args.exp}"
+            out_dir = f"lang2vec_probing/results_raw_cv/{args.layers[0]}/{args.exp}"
         else:
             out_dir = f"lang2vec_probing/results_cv/{args.layers[0]}/{args.exp}"
     else:
         if args.raw_model:
-            out_dir = f"lang2vec_probing/gemma_results_new_raw/{args.layers[0]}/{args.exp}"
+            out_dir = f"lang2vec_probing/gemma_results_raw_cv/{args.layers[0]}/{args.exp}"
         else:
-            out_dir = f"lang2vec_probing/gemma_results_new/{args.layers[0]}/{args.exp}"
+            out_dir = f"lang2vec_probing/gemma_results_cv/{args.layers[0]}/{args.exp}"
     
     run_probes_with_sources(lang_to_acts, union_indices, union_sources, features, 
                             args.langs, args.layers, out_dir, args.all_neurons, args.use_shared)
