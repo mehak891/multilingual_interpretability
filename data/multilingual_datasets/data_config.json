@@ -11,10 +11,11 @@
     "ja": {"flores": "jpn_Jpan", "flores_plus": "jpn_Jpan", "wmt": "ja", "opus100": "ja"},
     "ko": {"flores": "kor_Hang", "flores_plus": "kor_Hang", "wmt": "ko", "opus100": "ko"},
     "ar": {"flores": "arb_Arab", "flores_plus": "arb_Arab", "wmt": "ar", "opus100": "ar"},
-    "hi": {"flores": "hin_Deva", "flores_plus": "hin_Deva", "wmt": "hi", "opus100": "hi"},
-    "bn": {"flores": "ben_Beng", "flores_plus": "ben_Beng", "wmt": "bn", "opus100": "bn"},
-    "ur": {"flores": "urd_Arab", "flores_plus": "urd_Arab", "wmt": "ur", "opus100": "ur"},
-    "tr": {"flores": "tur_Latn", "flores_plus": "tur_Latn", "wmt": "tr", "opus100": "tr"}
+    "hi": {"flores": "hin_Deva", "flores_plus": "hin_Deva", "wmt": "hi", "opus100": "hi", "dakshina": "hi"},
+    "bn": {"flores": "ben_Beng", "flores_plus": "ben_Beng", "wmt": "bn", "opus100": "bn", "dakshina": "bn"},
+    "ur": {"flores": "urd_Arab", "flores_plus": "urd_Arab", "wmt": "ur", "opus100": "ur", "dakshina": "ur"},
+    "tr": {"flores": "tur_Latn", "flores_plus": "tur_Latn", "wmt": "tr", "opus100": "tr"},
+    "sd": {"dakshina": "sd"}
   },
   "datasets": {
     "flores": {
@@ -66,6 +67,13 @@
       "split_configs": ["train"],
       "supported_languages": ["en", "fr", "de", "es", "it", "pt"],
       "language_param_type": "parallel_subset"
+    },
+    "dakshina": {
+      "name": "dakshina",
+      "language_param_type": "dakshina_local",
+      "supported_languages": ["bn", "gu", "hi", "kn", "ml", "mr", "pa", "sd", "si", "ta", "te", "ur"], 
+      "split_configs": ["train"], 
+      "text_fields": ["native"]
     }
   }
 }

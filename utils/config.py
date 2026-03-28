@@ -31,6 +31,7 @@ def get_args():
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--shuffle', action='store_true', default=False)
     parser.add_argument('--shuffle_words', action='store_true', default=False, help='Shuffle words inside each sentence before tokenization')
+    parser.add_argument('--romanized', action='store_true', default=False, help='Romanized examples from Dakshina')
 
 
     # Interpretability
@@ -93,6 +94,7 @@ class Config:
         self.text_field = args.text_field
         self.max_length = args.max_length
         self.shuffle_words = args.shuffle_words
+        self.romanized = args.romanized
         self.subset = args.subset
         # Interpretability
         self.method = args.method

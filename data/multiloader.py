@@ -114,8 +114,27 @@ class MultilingualDatasetManager:
                 df = pd.DataFrame({"sentence": list(dataset[col])})
                 dataset = HFDatasetType.from_pandas(df)
 
+            elif dataset_name == "dakshina":
+                base_dir = Path("./romanization/dakshina_dataset_v1.0")
+                file_path = base_dir / common_lang / "romanized" / f"{common_lang}.romanized.rejoined.tsv"
+                import pandas as pd
+                df = pd.read_csv(
+                    file_path,
+                    sep="\t",
+                    header=None,
+                    names=["native", "romanized"],
+                    engine="python",         # more forgiving than C parser
+                    quoting=3,               # ignore quotes
+                    on_bad_lines="skip"      # skip malformed rows
+                    )
+                print(df.head())
+                dataset = HFDatasetType.from_pandas(df)
+                # return dataset
+
             else:
                 dataset = load_dataset(config['name'], split=split)
+
+            
                 
             return dataset
             
@@ -213,6 +232,7 @@ class MultilingualDatasetManager:
                          shuffle: bool = False,
                          num_workers: int = 0,
                          shuffle_words: bool = False,
+                         romanized: bool = False,
                          debug: bool = False) -> Optional[DataLoader]:
         """Create a PyTorch DataLoader using common language code
         
@@ -222,20 +242,30 @@ class MultilingualDatasetManager:
         hf_dataset = self.get_dataset(dataset_name, language, split)
         if hf_dataset is None:
             return None
+
+        hf_dataset = hf_dataset.select(range(min(1024, len(hf_dataset))))
         
         text_field = self.dataset_configs[dataset_name]['text_fields'][0]
+
+        if romanized:
+            text_field = 'romanized'
+
         pytorch_dataset = TokenizedDataset(
             hf_dataset, self.tokenizer, text_field, self.max_length, shuffle_words=shuffle_words, debug=debug
         )
         collator = DataCollatorWithPadding(self.tokenizer)
-        
-        return DataLoader(
+
+        dataloader = DataLoader(
             pytorch_dataset,
             batch_size=batch_size,
             shuffle=shuffle,
             num_workers=num_workers,
             collate_fn=collator
         )
+
+        print(f"batch size: {batch_size}, len dataloader: {len(dataloader)}")
+
+        return dataloader
     
     def get_available_languages(self, dataset_name: Optional[str] = None) -> Union[List[str], Dict[str, List[str]]]:
         """Get available languages using common language codes"""

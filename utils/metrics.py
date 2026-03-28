@@ -571,7 +571,10 @@ def sae_lape(
     print(f"[DEBUG] normed_activation_probs min: {normed_activation_probs.min().item():.8f}")
     print(f"[DEBUG] normed_activation_probs max: {normed_activation_probs.max().item():.8f}")
     print(f"[DEBUG] normed_activation_probs sum along lang dim (should be ~1): {normed_activation_probs.sum(dim=-1).mean().item():.8f}")
-
+    # valid = prob_sums.squeeze(-1) > 0
+    # print("Mean over valid neurons only:",
+    #     normed_activation_probs[valid].view(-1, 2).sum(dim=-1).mean().item())
+    
     # Entropy calculation
     print(f"\n[DEBUG] Calculating entropy...")
     log_probs = torch.where(normed_activation_probs > 0, normed_activation_probs.log(), 0)
